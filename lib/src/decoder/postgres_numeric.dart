@@ -1,7 +1,7 @@
 /// Exact decimal value of a Postgres `numeric` column.
 ///
 /// Public surface of the package — exported from
-/// `dart_db_connector_postgres.dart`.
+/// `slingshot_postgres.dart`.
 library;
 
 /// A Postgres `numeric` value, held exactly.

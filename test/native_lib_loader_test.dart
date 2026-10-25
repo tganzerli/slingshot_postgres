@@ -5,8 +5,8 @@
 /// is reachable. Skips gracefully if the library has not been built yet.
 library;
 
-import 'package:dart_db_connector_postgres/src/bindings/postgres_binding.dart';
-import 'package:dart_db_connector_postgres/src/native/postgres_lib_loader.dart';
+import 'package:slingshot_postgres/src/bindings/postgres_binding.dart';
+import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
 import 'package:test/test.dart';
 
 void main() {

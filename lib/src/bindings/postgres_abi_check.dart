@@ -43,17 +43,17 @@ const int _k32BitMask = 0xFFFFFFFF;
       'ABI mismatch: native library reports MAJOR=$major MINOR=$minor, '
       'but Dart package expects MAJOR=$expectedMajor MINOR=$expectedMinor. '
       'MAJOR mismatch is FATAL — rebuild '
-      'packages/dart_db_connector_postgres/native/ or update the Dart package '
+      'packages/slingshot_postgres/native/ or update the Dart package '
       '(kExpectedAbiMajor in lib/src/bindings/_postgres_abi_constants.dart).',
     );
   }
 
   if (minor < expectedMinor) {
     stderr.writeln(
-      '[dart_db_connector] WARNING: linked native library reports '
+      '[slingshot] WARNING: linked native library reports '
       'MINOR=$minor but Dart package expects MINOR>=$expectedMinor. '
       'Some features may be unavailable; consider rebuilding '
-      'packages/dart_db_connector_postgres/native/.',
+      'packages/slingshot_postgres/native/.',
     );
   }
 

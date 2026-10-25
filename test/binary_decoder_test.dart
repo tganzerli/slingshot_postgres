@@ -9,11 +9,11 @@ library;
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
-import 'package:dart_db_connector_postgres/src/decoder/postgres_decoder.dart';
-import 'package:dart_db_connector_postgres/src/decoder/postgres_numeric.dart';
-import 'package:dart_db_connector_postgres/src/decoder/postgres_oids.dart';
-import 'package:dart_db_connector_postgres/src/decoder/postgres_type.dart';
-import 'package:dart_db_connector_postgres/src/postgres/param.dart';
+import 'package:slingshot_postgres/src/decoder/postgres_decoder.dart';
+import 'package:slingshot_postgres/src/decoder/postgres_numeric.dart';
+import 'package:slingshot_postgres/src/decoder/postgres_oids.dart';
+import 'package:slingshot_postgres/src/decoder/postgres_type.dart';
+import 'package:slingshot_postgres/src/postgres/param.dart';
 import 'package:test/test.dart';
 
 Uint8List _enc(Param p) {

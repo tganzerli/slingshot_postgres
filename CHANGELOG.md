@@ -4,6 +4,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.4
+
+Renamed from `dart_db_connector_postgres` to `slingshot_postgres`; the repository moved with it. No API change: only the package
+name, the library import (`package:slingshot_postgres/slingshot_postgres.dart`) and the dependency key change. Depends on `slingshot_core`, the
+renamed contract package.
+
+The environment variable `DART_DB_CONNECTOR_NATIVE_LIB_PATH`, which overrides where the native library is
+loaded from, keeps its name: renaming it would change behavior.
+
 ## 0.1.3
 
 Consumed by `git` reference to the tag `v0.1.3`. Native ABI `2.6`, same native library as `0.1.0`.

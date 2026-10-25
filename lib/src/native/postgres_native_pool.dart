@@ -60,7 +60,7 @@ class WorkerPortCode {
   ///
   /// The ABI version check does not cover that direction — the shared
   /// policy accepts `linked MINOR >= expected MINOR` without a word
-  /// (`dart_db_connector_core/lib/src/native/abi_check_protocol.dart`)
+  /// (`slingshot_core/lib/src/native/abi_check_protocol.dart`)
   /// — so the guard has to be code, not version.
   static bool isKnown(int code) =>
       code == ok || code == aborted || code == connLost;

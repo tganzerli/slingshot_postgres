@@ -9,25 +9,25 @@
 ///     `Repository<T, K>`, this file fails to compile and the divergence
 ///     is caught before it merges.
 ///
-///  2. **Behavioural.** The battery in `package:dart_db_connector_conformance`,
+///  2. **Behavioural.** The battery in `package:slingshot_conformance`,
 ///     driven once per driver against a real database. Each driver skips
 ///     gracefully when its native lib or its server is unavailable, in
 ///     the same way the existing integration tests do.
 ///
 /// MongoDB used to appear here in the static half. It moved to its own
 /// package on 2026-09-08 and carries its own conformance file
-/// (`packages/dart_db_connector_mongo/test/contract_conformance_test.dart`),
+/// (`packages/slingshot_mongo/test/contract_conformance_test.dart`),
 /// which is the point of the split: the obligation travels with the driver.
 library;
 
 import 'dart:ffi' as ffi;
 
-import 'package:dart_db_connector_postgres/dart_db_connector_postgres.dart';
-import 'package:dart_db_connector_postgres/src/bindings/postgres_binding.dart';
-import 'package:dart_db_connector_postgres/src/native/postgres_lib_loader.dart';
+import 'package:slingshot_postgres/slingshot_postgres.dart';
+import 'package:slingshot_postgres/src/bindings/postgres_binding.dart';
+import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
 import 'package:test/test.dart';
 
-import 'package:dart_db_connector_conformance/dart_db_connector_conformance.dart';
+import 'package:slingshot_conformance/slingshot_conformance.dart';
 
 const _pgConnInfo =
     'host=localhost port=5432 dbname=teste user=postgres password=123';

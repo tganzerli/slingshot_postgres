@@ -1,4 +1,4 @@
-# dart_db_connector_postgres
+# slingshot_postgres
 
 PostgreSQL driver for Dart backends, built on `libpq` through `dart:ffi`.
 
@@ -14,15 +14,15 @@ responsive under load. On top of that sits an idiomatic `async`/`await` API.
 ## Install
 
 Depend on a tag of this repository. The package depends on
-[`dart_db_connector_core`](https://github.com/tganzerli/dart_db_connector_core) the same way, so nothing else
+[`slingshot_core`](https://github.com/tganzerli/slingshot_core) the same way, so nothing else
 is needed in your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  dart_db_connector_postgres:
+  slingshot_postgres:
     git:
-      url: https://github.com/tganzerli/dart_db_connector_postgres
-      ref: v0.1.3
+      url: https://github.com/tganzerli/slingshot_postgres
+      ref: v0.1.4
 ```
 
 ### Native library
@@ -42,7 +42,7 @@ How the library is found, in order:
 
 1. `DART_DB_CONNECTOR_NATIVE_LIB_PATH`, an absolute path that overrides everything else.
 2. The directory of the running executable, or `lib/_native/<os>-<arch>/` next to it.
-3. `package:dart_db_connector_postgres/_native/<os>-<arch>/`, the pre-built copy shipped in this package. It
+3. `package:slingshot_postgres/_native/<os>-<arch>/`, the pre-built copy shipped in this package. It
    resolves under `dart run` and `dart test` (JIT) only.
 4. `/usr/local/lib`.
 
@@ -56,7 +56,7 @@ COPY . .
 RUN dart pub get
 RUN dart compile exe bin/server.dart -o /app/server
 # Copy the pre-built library of the build platform from the resolved package.
-RUN ROOT=$(grep -o '"rootUri": *"file://[^"]*dart_db_connector_postgres[^"]*"' \
+RUN ROOT=$(grep -o '"rootUri": *"file://[^"]*slingshot_postgres[^"]*"' \
         .dart_tool/package_config.json | sed 's|.*file://||; s|"$||') \
     && ARCH=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/') \
     && cp "$ROOT/lib/_native/linux-$ARCH/libnative_db.so" /app/
@@ -71,7 +71,7 @@ ENTRYPOINT ["/app/server"]
 ## Quickstart
 
 ```dart
-import 'package:dart_db_connector_postgres/dart_db_connector_postgres.dart';
+import 'package:slingshot_postgres/slingshot_postgres.dart';
 
 Future<void> main() async {
   final pool = PostgresConnectionPool(
@@ -103,7 +103,9 @@ per isolate.
 ## What is included
 
 - **`PostgresConnectionPool`** and **`PoolConfig`**: the native pool, with an acquire timeout, optional
-  instrumentation (`acquireWaitUs`, `queueDepthAtAcquire`) and a graceful `close()`.
+  instrumentation (`acquireWaitUs`, `queueDepthAtAcquire`) and a graceful `close()`. When no connection frees up
+  within `PoolConfig.acquireTimeout`, `acquire()` throws **`PoolExhaustedException`** (carrying the `timeout`); the
+  pool stays usable, so the caller can retry, back off or answer `503`.
 - **Pool contention for periodic metrics.** With `PoolConfig.instrumentationEnabled`, the pool also accumulates
   what `acquire()` saw, on every path that borrows a connection (`withTransaction` and `PostgresUnitOfWork`
   included). `takeAcquireStats()` returns it as a `PoolAcquireStats` and resets it in the same step: connections
@@ -132,11 +134,14 @@ per isolate.
   for bulk writes), `withTransactionInstrumented` with `TxDiagnostics`, and `withPostgresConnection` for
   autocommit work on one borrowed connection.
 - **`PostgresUnitOfWork`** and **`PostgresRepository<T, K>`**, implementing the `UnitOfWork` and `Repository`
-  contracts of `dart_db_connector_core`.
+  contracts of `slingshot_core`.
 - **Parameters:** `Param` (`Param.int4`, `Param.text`, `Param.timestamptz`, …, `Param.nullValue(oid)`) bound
-  through the Extended Query protocol.
+  through the Extended Query protocol. A typed `NULL` takes its OID from **`PostgresOid`**, the built-in type
+  OIDs: `Param.nullValue(PostgresOid.int4)`.
 - **Results:** `PostgresResultSet` / `PostgresResultRow` read the native result in place; text and binary
-  decoders for the common types, including `numeric` as `PostgresNumeric`.
+  decoders for the common types, including `numeric` as `PostgresNumeric`. Decoding dispatches on
+  **`PostgresType`**, a tag per OID; a column whose OID it does not know (an extension type, for instance) maps to
+  `PostgresType.unknown` and comes back as the raw `Uint8List`, so the caller can decode it.
 - **TLS:** any libpq TLS parameter in the connection string, or **`PostgresConnInfo`** with **`SslMode`** as an
   explicit choice (no default). Tested with `verify-full` and client certificates; a handshake failure reaches
   `NativePoolStartupException` with libpq's reason, and the password is masked in every exception. See

@@ -27,7 +27,7 @@
 /// win is security and ergonomics for parameter binding.
 library;
 
-import 'package:dart_db_connector_core/dart_db_connector_core.dart';
+import 'package:slingshot_core/slingshot_core.dart';
 import '../decoder/postgres_result_row.dart';
 import 'param.dart';
 import 'postgres_query_executor.dart';

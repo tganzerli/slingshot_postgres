@@ -13,7 +13,7 @@
 ///   dart run example/02_transaction.dart
 library;
 
-import 'package:dart_db_connector_postgres/dart_db_connector_postgres.dart';
+import 'package:slingshot_postgres/slingshot_postgres.dart';
 
 import 'produto.dart';
 import 'produto_repository.dart';

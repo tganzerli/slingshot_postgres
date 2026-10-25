@@ -32,7 +32,7 @@ const _postgresByFact = <String>{};
 /// The one file that still knows more than one driver: the loader picks a
 /// library and an ABI checker per driver, so it imports all three that remain
 /// in this package. The path-walking mechanism it used to own moved to
-/// `package:dart_db_connector_core` when MongoDB left, which is why this list
+/// `package:slingshot_core` when MongoDB left, which is why this list
 /// shrinks rather than grows. Listed here so the exception stays visible and
 /// countable instead of implicit.
 const _knownHubs = {'postgres_lib_loader.dart'};

@@ -1,6 +1,6 @@
 /// Per-isolate singleton holder for [PostgresBinding].
 ///
-/// The public API of `dart_db_connector` (`PostgresConnectionPool`,
+/// The public API of `slingshot` (`PostgresConnectionPool`,
 /// `withTransaction`, etc.) hides FFI from consumers. Internally, all of
 /// these need access to a configured [PostgresBinding] (which wraps
 /// `libnative_db` symbols + initialised Dart Native API). Constructing
@@ -61,7 +61,7 @@ class SharedBinding {
 
   /// Replaces the cached instance — strictly for tests that need to
   /// inject a custom binding. Not part of the public API; callers must
-  /// import `package:dart_db_connector_postgres/src/_internal/...` explicitly.
+  /// import `package:slingshot_postgres/src/_internal/...` explicitly.
   ///
   /// Pass `null` to clear the cache (next [instance] call will re-resolve
   /// from scratch).

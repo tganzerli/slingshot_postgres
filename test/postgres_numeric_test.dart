@@ -5,7 +5,7 @@
 /// hold.
 library;
 
-import 'package:dart_db_connector_postgres/src/decoder/postgres_numeric.dart';
+import 'package:slingshot_postgres/src/decoder/postgres_numeric.dart';
 import 'package:test/test.dart';
 
 void main() {

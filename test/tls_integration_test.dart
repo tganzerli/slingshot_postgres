@@ -12,13 +12,13 @@ import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
-import 'package:dart_db_connector_core/dart_db_connector_core.dart'
+import 'package:slingshot_core/slingshot_core.dart'
     show ConnectionLostException;
-import 'package:dart_db_connector_postgres/dart_db_connector_postgres.dart';
-import 'package:dart_db_connector_postgres/src/bindings/postgres_binding.dart';
-import 'package:dart_db_connector_postgres/src/native/postgres_lib_loader.dart';
-import 'package:dart_db_connector_postgres/src/native/postgres_native_pool.dart';
-import 'package:dart_db_connector_postgres/src/postgres/postgres_query_executor.dart';
+import 'package:slingshot_postgres/slingshot_postgres.dart';
+import 'package:slingshot_postgres/src/bindings/postgres_binding.dart';
+import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
+import 'package:slingshot_postgres/src/native/postgres_native_pool.dart';
+import 'package:slingshot_postgres/src/postgres/postgres_query_executor.dart';
 import 'package:test/test.dart';
 
 final _port = Platform.environment['TLS_PG_PORT'] ?? '5434';

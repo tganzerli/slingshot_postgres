@@ -5,13 +5,13 @@
 /// per-test in Dart.
 ///
 /// The mechanism itself — platform identifier, candidate list, failure
-/// message — moved to `package:dart_db_connector_core` on 2026-09-08 and is
+/// message — moved to `package:slingshot_core` on 2026-09-08 and is
 /// tested there (`test/library_resolver_test.dart`).
 library;
 
 import 'dart:io';
 
-import 'package:dart_db_connector_postgres/src/native/postgres_lib_loader.dart';
+import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
 import 'package:test/test.dart';
 
 void main() {

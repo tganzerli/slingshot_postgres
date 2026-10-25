@@ -51,7 +51,7 @@ typedef struct native_conn native_conn_t;
 /// the Dart package can post a code the package has never heard of,
 /// and the ABI version check does NOT protect that direction (the
 /// shared policy accepts `linked MINOR >= expected MINOR` silently —
-/// `dart_db_connector_core/lib/src/native/abi_check_protocol.dart`).
+/// `slingshot_core/lib/src/native/abi_check_protocol.dart`).
 /// The protection is code, not version.
 #define WORKER_PORT_OK        ((int64_t)1)
 /// Results are available; drain via `poll_result`.

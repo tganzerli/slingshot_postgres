@@ -17,7 +17,7 @@
 ///   dart run example/04_diagnostics.dart
 library;
 
-import 'package:dart_db_connector_postgres/dart_db_connector_postgres.dart';
+import 'package:slingshot_postgres/slingshot_postgres.dart';
 
 const _connInfo =
     'host=localhost port=5432 dbname=teste user=postgres password=123';

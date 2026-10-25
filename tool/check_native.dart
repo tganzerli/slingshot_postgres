@@ -6,8 +6,8 @@
 //   DART_DB_CONNECTOR_NATIVE_LIB_PATH=/abs/libnative_db.so dart run tool/check_native.dart
 // ignore_for_file: implementation_imports, invalid_use_of_internal_member
 
-import 'package:dart_db_connector_postgres/src/bindings/_postgres_abi_constants.dart';
-import 'package:dart_db_connector_postgres/src/native/postgres_lib_loader.dart';
+import 'package:slingshot_postgres/src/bindings/_postgres_abi_constants.dart';
+import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
 
 void main() {
   loadNativeDb();

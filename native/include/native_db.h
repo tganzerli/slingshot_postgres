@@ -9,7 +9,7 @@
 ///   3. A synchronous update to `dart/lib/src/bindings/postgres_binding.dart`
 ///      in the same PR.
 ///
-/// Linked Dart binding: `package:dart_db_connector_postgres/src/bindings/postgres_binding.dart`.
+/// Linked Dart binding: `package:slingshot_postgres/src/bindings/postgres_binding.dart`.
 
 #ifndef NATIVE_DB_H
 #define NATIVE_DB_H

@@ -9,8 +9,8 @@ library;
 import 'dart:ffi' as ffi;
 import 'dart:typed_data';
 
-import 'package:dart_db_connector_postgres/src/decoder/postgres_oids.dart';
-import 'package:dart_db_connector_postgres/src/postgres/param.dart';
+import 'package:slingshot_postgres/src/decoder/postgres_oids.dart';
+import 'package:slingshot_postgres/src/postgres/param.dart';
 import 'package:test/test.dart';
 
 // ─────────── helpers ───────────

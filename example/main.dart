@@ -1,4 +1,4 @@
-/// First-contact example for `dart_db_connector`.
+/// First-contact example for `slingshot`.
 ///
 /// Opens a pool, runs a couple of queries inside a transaction, and
 /// closes everything cleanly. Other files in this directory drill into
@@ -9,7 +9,7 @@
 ///   dart run example/main.dart
 library;
 
-import 'package:dart_db_connector_postgres/dart_db_connector_postgres.dart';
+import 'package:slingshot_postgres/slingshot_postgres.dart';
 
 const _connInfo =
     'host=localhost port=5432 dbname=teste user=postgres password=123';

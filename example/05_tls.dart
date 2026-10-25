@@ -20,7 +20,7 @@ library;
 
 import 'dart:io';
 
-import 'package:dart_db_connector_postgres/dart_db_connector_postgres.dart';
+import 'package:slingshot_postgres/slingshot_postgres.dart';
 
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {

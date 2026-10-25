@@ -16,7 +16,7 @@
 /// diagnostics record is meaningless.
 library;
 
-import 'package:dart_db_connector_core/dart_db_connector_core.dart';
+import 'package:slingshot_core/slingshot_core.dart';
 import 'package:meta/meta.dart';
 
 import '../pool/postgres_connection_pool.dart';

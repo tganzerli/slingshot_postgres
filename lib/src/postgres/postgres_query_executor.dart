@@ -10,7 +10,7 @@ import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:isolate';
 
-import 'package:dart_db_connector_core/dart_db_connector_core.dart';
+import 'package:slingshot_core/slingshot_core.dart';
 import 'package:ffi/ffi.dart';
 import 'package:meta/meta.dart';
 
@@ -73,7 +73,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// drain results off a dead connection, in silence. The ABI MINOR
   /// bump does not protect that direction: the shared policy accepts
   /// `linked MINOR >= expected MINOR` without a word
-  /// (`dart_db_connector_core/lib/src/native/abi_check_protocol.dart`).
+  /// (`slingshot_core/lib/src/native/abi_check_protocol.dart`).
   /// The guard has to be code, not version.
   ///
   /// The old sites also force-unwrapped `_timeout!` on the abort path,
@@ -100,7 +100,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
       'native worker posted unknown port code $portCode; this Dart package '
       'understands 1 (ok), 2 (aborted) and 3 (connection lost). The linked '
       'native library is newer than the package — rebuild '
-      'packages/dart_db_connector_postgres/native/ or update the package',
+      'packages/slingshot_postgres/native/ or update the package',
     );
   }
 

@@ -1,4 +1,4 @@
-/// dart_db_connector — High-performance multi-database connector for Dart Backend.
+/// slingshot — High-performance multi-database connector for Dart Backend.
 ///
 /// Stage: PoC. Public API is **minimal and evolving** — pin to commit
 /// hashes rather than version ranges until a 1.0 milestone is published.
@@ -7,9 +7,9 @@
 /// thread-per-conn pool: **PostgreSQL** (`libpq`), **MySQL**
 /// (`libmysqlclient`) and **SQLite** (`libsqlite3`). All reuse
 /// the [Repository] and [UnitOfWork] contracts from
-/// `package:dart_db_connector_core`.
+/// `package:slingshot_core`.
 ///
-/// **MongoDB moved out on 2026-09-08** into `dart_db_connector_mongo`, the
+/// **MongoDB moved out on 2026-09-08** into `slingshot_mongo`, the
 /// driver that proves the per-DBMS package split: a consumer that wants only
 /// MongoDB no longer builds `libpq`, `libmysqlclient` or `libsqlite3`, and
 /// the reverse holds too. The remaining three follow in their own cycle.
@@ -43,7 +43,7 @@
 ///   - Transactional helpers: [withMysqlTransaction],
 ///     [withMysqlTransactionOn].
 ///
-/// What's NOT exported (internal — use `package:dart_db_connector_postgres/src/...`
+/// What's NOT exported (internal — use `package:slingshot_postgres/src/...`
 /// only if you accept ABI/internal churn):
 ///   - Low-level FFI binding (`PostgresBinding`) — subject to ABI change.
 ///   - Native library loader (`loadNativeDb`).
@@ -66,7 +66,7 @@ export 'src/decoder/postgres_type.dart' show PostgresType;
 export 'src/decoder/postgres_oids.dart' show PostgresOid;
 
 
-export 'package:dart_db_connector_core/dart_db_connector_core.dart'
+export 'package:slingshot_core/slingshot_core.dart'
     show
         QueryFailedException,
         QueryTimeoutException,
@@ -86,12 +86,12 @@ export 'src/postgres/with_transaction_instrumented.dart'
 export 'src/pool/postgres_pool_diagnostics.dart' show TxDiagnostics, PoolDiagnosticsSink;
 
 // ── MySQL driver — moved out (2026-09-09). It now ships as its own
-//    package, `dart_db_connector_mysql`, with its own libmysqlclient
+//    package, `slingshot_mysql`, with its own libmysqlclient
 //    build.
 
 // ── MongoDB driver — moved out (2026-09-08). It now ships as its own
-//    package, `dart_db_connector_mongo`, with its own libmongoc build:
+//    package, `slingshot_mongo`, with its own libmongoc build:
 //    the first driver to prove the per-DBMS package split. ──
 
 // ── SQLite driver — moved out (2026-09-09). It now ships as its own
-//    package, `dart_db_connector_sqlite`, with its own libsqlite3 build.
+//    package, `slingshot_sqlite`, with its own libsqlite3 build.

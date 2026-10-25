@@ -10,9 +10,9 @@
 /// Skips gracefully if the native library has not been built.
 library;
 
-import 'package:dart_db_connector_postgres/src/bindings/_postgres_abi_constants.dart';
-import 'package:dart_db_connector_postgres/src/bindings/postgres_abi_check.dart';
-import 'package:dart_db_connector_postgres/src/native/postgres_lib_loader.dart';
+import 'package:slingshot_postgres/src/bindings/_postgres_abi_constants.dart';
+import 'package:slingshot_postgres/src/bindings/postgres_abi_check.dart';
+import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
 import 'package:test/test.dart';
 
 void main() {

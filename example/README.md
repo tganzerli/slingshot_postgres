@@ -1,4 +1,4 @@
-# dart_db_connector — Examples
+# slingshot — Examples
 
 Runnable demos of the public API. Each file is self-contained; read in
 order or jump to the pattern you need.

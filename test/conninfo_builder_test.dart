@@ -2,8 +2,8 @@
 /// choice. Pure unit tests, no server.
 library;
 
-import 'package:dart_db_connector_postgres/dart_db_connector_postgres.dart';
-import 'package:dart_db_connector_postgres/src/native/postgres_native_pool.dart'
+import 'package:slingshot_postgres/slingshot_postgres.dart';
+import 'package:slingshot_postgres/src/native/postgres_native_pool.dart'
     show redactConninfo;
 import 'package:test/test.dart';
 

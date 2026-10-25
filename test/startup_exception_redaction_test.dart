@@ -2,7 +2,7 @@
 /// string it was given, in any libpq format. Pure unit tests, no server.
 library;
 
-import 'package:dart_db_connector_postgres/src/native/postgres_native_pool.dart';
+import 'package:slingshot_postgres/src/native/postgres_native_pool.dart';
 import 'package:test/test.dart';
 
 void main() {

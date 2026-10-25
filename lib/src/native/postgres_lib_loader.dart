@@ -1,19 +1,19 @@
 /// Resolves the native shared library of each driver that still lives in this
 /// package, and validates its ABI.
 ///
-/// The path-walking mechanism moved to `package:dart_db_connector_core`
+/// The path-walking mechanism moved to `package:slingshot_core`
 /// (`library_resolver.dart`) on 2026-09-08, when MongoDB became its own
 /// package: a resolver that hard-codes one package name cannot serve more than
 /// one package. What stays here is the per-driver data — filenames, the
 /// environment variable, the ABI pair — for PostgreSQL, the only driver left
 /// in this package. MySQL and SQLite moved out on 2026-09-09; MongoDB on
 /// 2026-09-08.
-/// MongoDB's equivalent now lives in `dart_db_connector_mongo`.
+/// MongoDB's equivalent now lives in `slingshot_mongo`.
 ///
 /// Search order, the failure message and the `_native/<os>-<arch>/` layout are
 /// documented on `openDriverLibrary`.
 ///
-/// **Internal helper.** Consumers of `dart_db_connector` should not call this
+/// **Internal helper.** Consumers of `slingshot` should not call this
 /// directly — `PostgresConnectionPool` (and every other public entry point)
 /// resolves the binding internally via the per-isolate `SharedBinding`
 /// singleton. The functions stay exported within the package source tree
@@ -24,7 +24,7 @@ library;
 
 import 'dart:ffi' as ffi;
 
-import 'package:dart_db_connector_core/dart_db_connector_core.dart';
+import 'package:slingshot_core/slingshot_core.dart';
 import 'package:meta/meta.dart';
 
 import '../bindings/_postgres_abi_constants.dart';
@@ -63,7 +63,7 @@ const List<String> _devPaths = [
   'build',
   'native/build',
   '../native/build',
-  'packages/dart_db_connector_postgres/native/build',
+  'packages/slingshot_postgres/native/build',
   'native/c/build',
   '../native/c/build',
   'native/c/build-macos',
@@ -71,9 +71,9 @@ const List<String> _devPaths = [
 ];
 
 const String _buildHint =
-    'cmake -S packages/dart_db_connector_postgres/native '
-    '-B packages/dart_db_connector_postgres/native/build && '
-    'cmake --build packages/dart_db_connector_postgres/native/build';
+    'cmake -S packages/slingshot_postgres/native '
+    '-B packages/slingshot_postgres/native/build && '
+    'cmake --build packages/slingshot_postgres/native/build';
 
 ffi.DynamicLibrary _openLibrary(
   LibNames names,
@@ -83,7 +83,7 @@ ffi.DynamicLibrary _openLibrary(
     openDriverLibrary(
       names: names,
       envOverride: envOverride,
-      packageName: 'dart_db_connector_postgres',
+      packageName: 'slingshot_postgres',
       overridePath: overridePath,
       extraDevPaths: _devPaths,
       buildHint: _buildHint,

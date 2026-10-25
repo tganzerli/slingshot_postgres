@@ -1,29 +1,29 @@
-name: dart_db_connector_postgres
+name: slingshot_postgres
 description: >
   PostgreSQL driver for Dart Backend: dart:ffi over libpq with a native
   thread/connection pool and Dart Native Ports for zero-blocking async I/O,
   plus zero-copy reads over the raw PGresult. Links libpq and nothing else.
-version: 0.1.3
+version: 0.1.4
 publish_to: none
 
-repository: https://github.com/tganzerli/dart_db_connector_postgres
+repository: https://github.com/tganzerli/slingshot_postgres
 
 environment:
   sdk: ^3.6.0
 
 dependencies:
-  dart_db_connector_core:
+  slingshot_core:
     git:
-      url: https://github.com/tganzerli/dart_db_connector_core
-      ref: v1.0.1
+      url: https://github.com/tganzerli/slingshot_core
+      ref: v1.0.2
   ffi: ^2.1.0
   meta: ^1.15.0
 
 dev_dependencies:
-  dart_db_connector_conformance:
+  slingshot_conformance:
     git:
-      url: https://github.com/tganzerli/dart_db_connector_core
-      ref: v1.0.1
+      url: https://github.com/tganzerli/slingshot_core
+      ref: v1.0.2
       path: conformance
   coverage: ^1.15.0
   lints: ^4.0.0
