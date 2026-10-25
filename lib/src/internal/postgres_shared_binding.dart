@@ -1,6 +1,6 @@
 /// Per-isolate singleton holder for [PostgresBinding].
 ///
-/// The public API of `slingshot` (`PostgresConnectionPool`,
+/// The public API of `slingshot_postgres` (`PostgresConnectionPool`,
 /// `withTransaction`, etc.) hides FFI from consumers. Internally, all of
 /// these need access to a configured [PostgresBinding] (which wraps
 /// `libnative_db` symbols + initialised Dart Native API). Constructing

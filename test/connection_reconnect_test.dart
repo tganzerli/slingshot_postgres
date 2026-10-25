@@ -23,7 +23,7 @@ library;
 import 'dart:ffi' as ffi;
 import 'dart:isolate';
 
-import 'package:slingshot_core/slingshot_core.dart';
+import 'package:slingshot/slingshot.dart';
 import 'package:slingshot_postgres/src/bindings/postgres_binding.dart';
 import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
 import 'package:slingshot_postgres/src/native/postgres_native_pool.dart';

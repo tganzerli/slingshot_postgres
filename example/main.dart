@@ -1,4 +1,4 @@
-/// First-contact example for `slingshot`.
+/// First-contact example for `slingshot_postgres`.
 ///
 /// Opens a pool, runs a couple of queries inside a transaction, and
 /// closes everything cleanly. Other files in this directory drill into

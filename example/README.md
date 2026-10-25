@@ -1,4 +1,4 @@
-# slingshot — Examples
+# slingshot_postgres — Examples
 
 Runnable demos of the public API. Each file is self-contained; read in
 order or jump to the pattern you need.

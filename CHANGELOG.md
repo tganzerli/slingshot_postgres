@@ -4,6 +4,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.5
+
+First release on pub.dev. Depends on `slingshot` (the contract package, formerly `slingshot_core`) from pub.dev,
+`^1.0.3`, instead of by `git`. No API or ABI change; the native library is the one shipped since 0.1.0. An app
+that installs this version from pub.dev must not also take `orbiter_postgres` 0.1.4 or older by `git`, which
+brings the connector by `git`: use `orbiter_postgres` 0.1.5 or newer.
+
 ## 0.1.4
 
 Renamed from `dart_db_connector_postgres` to `slingshot_postgres`; the repository moved with it. No API change: only the package

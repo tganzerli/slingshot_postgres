@@ -1,7 +1,7 @@
 /// Resolves the native shared library of each driver that still lives in this
 /// package, and validates its ABI.
 ///
-/// The path-walking mechanism moved to `package:slingshot_core`
+/// The path-walking mechanism moved to `package:slingshot`
 /// (`library_resolver.dart`) on 2026-09-08, when MongoDB became its own
 /// package: a resolver that hard-codes one package name cannot serve more than
 /// one package. What stays here is the per-driver data — filenames, the
@@ -13,7 +13,7 @@
 /// Search order, the failure message and the `_native/<os>-<arch>/` layout are
 /// documented on `openDriverLibrary`.
 ///
-/// **Internal helper.** Consumers of `slingshot` should not call this
+/// **Internal helper.** Consumers of `slingshot_postgres` should not call this
 /// directly — `PostgresConnectionPool` (and every other public entry point)
 /// resolves the binding internally via the per-isolate `SharedBinding`
 /// singleton. The functions stay exported within the package source tree
@@ -24,7 +24,7 @@ library;
 
 import 'dart:ffi' as ffi;
 
-import 'package:slingshot_core/slingshot_core.dart';
+import 'package:slingshot/slingshot.dart';
 import 'package:meta/meta.dart';
 
 import '../bindings/_postgres_abi_constants.dart';

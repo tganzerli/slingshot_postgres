@@ -8,26 +8,19 @@ responsive under load. On top of that sits an idiomatic `async`/`await` API.
 
 ## Status
 
-**Experimental, not on pub.dev yet.** Consumed by `git` reference to a tagged version (see
-[Install](#install)). Native ABI `MAJOR 2 / MINOR 6`.
+Experimental (pre-1.0), on pub.dev. Native ABI `MAJOR 2 / MINOR 6`.
 
 ## Install
 
-Depend on a tag of this repository. The package depends on
-[`slingshot_core`](https://github.com/tganzerli/slingshot_core) the same way, so nothing else
-is needed in your `pubspec.yaml`:
-
-```yaml
-dependencies:
-  slingshot_postgres:
-    git:
-      url: https://github.com/tganzerli/slingshot_postgres
-      ref: v0.1.4
+```sh
+dart pub add slingshot_postgres
 ```
+
+The contract package, [`slingshot`](https://pub.dev/packages/slingshot), comes with it.
 
 ### Native library
 
-The tag ships the native library pre-built in `lib/_native/<os>-<arch>/` for `linux-x64`, `linux-arm64`,
+The package ships the native library pre-built in `lib/_native/<os>-<arch>/` for `linux-x64`, `linux-arm64`,
 `macos-x64` and `macos-arm64`. It links dynamically against `libpq`, which must be installed where the app
 runs:
 
@@ -67,6 +60,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libpq5 ca-certi
 COPY --from=build /app/server /app/libnative_db.so /app/
 ENTRYPOINT ["/app/server"]
 ```
+
+The `grep` finds the package by name in `.dart_tool/package_config.json`. A copy of this recipe made before the
+rename looks for `dart_db_connector_postgres`; change the name there when migrating.
 
 ## Quickstart
 
@@ -134,7 +130,7 @@ per isolate.
   for bulk writes), `withTransactionInstrumented` with `TxDiagnostics`, and `withPostgresConnection` for
   autocommit work on one borrowed connection.
 - **`PostgresUnitOfWork`** and **`PostgresRepository<T, K>`**, implementing the `UnitOfWork` and `Repository`
-  contracts of `slingshot_core`.
+  contracts of `slingshot`.
 - **Parameters:** `Param` (`Param.int4`, `Param.text`, `Param.timestamptz`, …, `Param.nullValue(oid)`) bound
   through the Extended Query protocol. A typed `NULL` takes its OID from **`PostgresOid`**, the built-in type
   OIDs: `Param.nullValue(PostgresOid.int4)`.

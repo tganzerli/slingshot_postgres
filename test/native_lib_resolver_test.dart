@@ -5,7 +5,7 @@
 /// per-test in Dart.
 ///
 /// The mechanism itself — platform identifier, candidate list, failure
-/// message — moved to `package:slingshot_core` on 2026-09-08 and is
+/// message — moved to `package:slingshot` on 2026-09-08 and is
 /// tested there (`test/library_resolver_test.dart`).
 library;
 

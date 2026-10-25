@@ -12,7 +12,7 @@ import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
-import 'package:slingshot_core/slingshot_core.dart'
+import 'package:slingshot/slingshot.dart'
     show ConnectionLostException;
 import 'package:slingshot_postgres/slingshot_postgres.dart';
 import 'package:slingshot_postgres/src/bindings/postgres_binding.dart';

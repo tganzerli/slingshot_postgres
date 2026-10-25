@@ -1,4 +1,4 @@
-/// slingshot — High-performance multi-database connector for Dart Backend.
+/// slingshot_postgres — PostgreSQL driver of the slingshot family for Dart Backend.
 ///
 /// Stage: PoC. Public API is **minimal and evolving** — pin to commit
 /// hashes rather than version ranges until a 1.0 milestone is published.
@@ -7,7 +7,7 @@
 /// thread-per-conn pool: **PostgreSQL** (`libpq`), **MySQL**
 /// (`libmysqlclient`) and **SQLite** (`libsqlite3`). All reuse
 /// the [Repository] and [UnitOfWork] contracts from
-/// `package:slingshot_core`.
+/// `package:slingshot`.
 ///
 /// **MongoDB moved out on 2026-09-08** into `slingshot_mongo`, the
 /// driver that proves the per-DBMS package split: a consumer that wants only
@@ -66,7 +66,7 @@ export 'src/decoder/postgres_type.dart' show PostgresType;
 export 'src/decoder/postgres_oids.dart' show PostgresOid;
 
 
-export 'package:slingshot_core/slingshot_core.dart'
+export 'package:slingshot/slingshot.dart'
     show
         QueryFailedException,
         QueryTimeoutException,

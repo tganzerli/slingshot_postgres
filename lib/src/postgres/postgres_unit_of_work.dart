@@ -8,7 +8,7 @@
 /// see [PostgresUnitOfWork.begin].
 library;
 
-import 'package:slingshot_core/slingshot_core.dart';
+import 'package:slingshot/slingshot.dart';
 import '../pool/postgres_connection_pool.dart';
 import 'postgres_query_executor.dart';
 

@@ -282,7 +282,7 @@ typedef _ClearResultDart = void Function(ffi.Pointer<ffi.Void>);
 /// of `libnative_db`. Construction looks up symbols eagerly so any missing
 /// symbol surfaces immediately rather than at first use.
 ///
-/// **Internal class.** Consumers of `slingshot` should not import
+/// **Internal class.** Consumers of `slingshot_postgres` should not import
 /// or instantiate `PostgresBinding` directly — use [PostgresConnectionPool]
 /// or any other public entry point, which resolves the binding internally
 /// via the per-isolate `SharedBinding` singleton. The class stays in the

@@ -28,7 +28,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:ffi' as ffi;
 
-import 'package:slingshot_core/slingshot_core.dart'
+import 'package:slingshot/slingshot.dart'
     show ConnectionLostException, QueryFailedException;
 import 'package:meta/meta.dart';
 
