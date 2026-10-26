@@ -1,9 +1,9 @@
 name: slingshot_postgres
 description: >
-  PostgreSQL driver for Dart Backend: dart:ffi over libpq with a native
-  thread/connection pool and Dart Native Ports for zero-blocking async I/O,
-  plus zero-copy reads over the raw PGresult. Links libpq and nothing else.
-version: 0.1.5
+  PostgreSQL driver for Dart backends over libpq and dart:ffi: a native
+  thread-per-connection pool, async I/O that never blocks an isolate,
+  zero-copy result reads.
+version: 0.1.6
 
 repository: https://github.com/tganzerli/slingshot_postgres
 topics:

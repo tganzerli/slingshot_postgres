@@ -1,14 +1,44 @@
 # slingshot_postgres
 
-PostgreSQL driver for Dart backends, built on `libpq` through `dart:ffi`.
+[![pub package](https://img.shields.io/pub/v/slingshot_postgres.svg)](https://pub.dev/packages/slingshot_postgres)
+[![pub points](https://img.shields.io/pub/points/slingshot_postgres)](https://pub.dev/packages/slingshot_postgres/score)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Each pooled connection is owned by a native thread outside the Dart VM, and completions come back through
-Dart native ports: a blocking database call occupies an OS thread, never an isolate, so the event loop stays
-responsive under load. On top of that sits an idiomatic `async`/`await` API.
+**A PostgreSQL driver for Dart backends that keeps database waits off your isolates: libpq through `dart:ffi`,
+with the connection pool running in native threads.**
 
-## Status
+In a Dart server, the database driver is usually where the language's speed gets lost. This package moves the
+expensive part out of the Dart VM: each pooled connection is owned by a native thread that talks to PostgreSQL
+through `libpq`, the official client library, and completions come back through Dart native ports. A slow query
+occupies an OS thread, never an isolate, so the event loop keeps serving requests under load. Your code sees an
+idiomatic `async`/`await` API.
 
-Experimental (pre-1.0), on pub.dev. Native ABI `MAJOR 2 / MINOR 6`.
+The design was measured against six other drivers (Dart, Go, Java, Node, Python and Rust) in a reproducible
+benchmark suite. In a TPC-C workload it led every topology: **712.9 transactions per second** with one connection
+and **1,790.2 with four**, against 383.1 and 1,126.5 for the incumbent pure-Dart driver on pub.dev. Behind the same
+HTTP framework it served **1.55x to 4.31x** that driver's throughput on the four database-bound endpoints (three
+with separated confidence intervals), with a p99 1.6x to 19x lower than Go's. These numbers come from the code
+evaluated in the thesis (`dart_db_connector` 0.1.0, tag `tcc-baseline`) on an Apple M4; the method, the limitations
+and the steps to reproduce them are in
+[`RESULTS.md`](https://github.com/tganzerli/dart_db_connector/blob/main/benchmarks/RESULTS.md). Absolute values
+depend on the host: what reproduces is the ordering, which at driver level held on a second, x86_64 machine, while
+the HTTP results come from the M4 only.
+
+## Features
+
+- **Native pool, async API:** `PostgresConnectionPool` with acquire timeout, graceful `close()` and optional
+  contention metrics for your dashboards.
+- **Transactions your way:** `withTransaction`, libpq pipeline mode for bulk writes (`withPipelinedTransaction`),
+  per-transaction diagnostics, and the `UnitOfWork`/`Repository` contract of
+  [`slingshot`](https://pub.dev/packages/slingshot).
+- **Zero-copy reads:** result rows are decoded in place from the native result, in text or binary format, with
+  `numeric` kept exact.
+- **Safe pooling:** session state (`SET`, `search_path`, temporary tables, advisory locks) is reset when a
+  connection returns, so one request never leaks into the next.
+- **TLS:** every libpq TLS mode, tested with `verify-full` and client certificates; passwords are masked in every
+  exception.
+- **Pre-built:** the native library ships in the package for Linux and macOS, x64 and arm64. You only install
+  `libpq`.
 
 ## Install
 
@@ -16,53 +46,8 @@ Experimental (pre-1.0), on pub.dev. Native ABI `MAJOR 2 / MINOR 6`.
 dart pub add slingshot_postgres
 ```
 
-The contract package, [`slingshot`](https://pub.dev/packages/slingshot), comes with it.
-
-### Native library
-
-The package ships the native library pre-built in `lib/_native/<os>-<arch>/` for `linux-x64`, `linux-arm64`,
-`macos-x64` and `macos-arm64`. It links dynamically against `libpq`, which must be installed where the app
-runs:
-
-| Platform | Runtime package |
-|---|---|
-| Debian / Ubuntu | `apt install libpq5` |
-| macOS | `brew install libpq` |
-
-Windows is not supported (the native pool uses pthreads).
-
-How the library is found, in order:
-
-1. `DART_DB_CONNECTOR_NATIVE_LIB_PATH`, an absolute path that overrides everything else.
-2. The directory of the running executable, or `lib/_native/<os>-<arch>/` next to it.
-3. `package:slingshot_postgres/_native/<os>-<arch>/`, the pre-built copy shipped in this package. It
-   resolves under `dart run` and `dart test` (JIT) only.
-4. `/usr/local/lib`.
-
-**AOT executables** (`dart compile exe`, container images) cannot resolve `package:` URIs at run time, so copy
-the library next to the executable:
-
-```dockerfile
-FROM dart:stable AS build
-WORKDIR /app
-COPY . .
-RUN dart pub get
-RUN dart compile exe bin/server.dart -o /app/server
-# Copy the pre-built library of the build platform from the resolved package.
-RUN ROOT=$(grep -o '"rootUri": *"file://[^"]*slingshot_postgres[^"]*"' \
-        .dart_tool/package_config.json | sed 's|.*file://||; s|"$||') \
-    && ARCH=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/') \
-    && cp "$ROOT/lib/_native/linux-$ARCH/libnative_db.so" /app/
-
-FROM debian:stable-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libpq5 ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=build /app/server /app/libnative_db.so /app/
-ENTRYPOINT ["/app/server"]
-```
-
-The `grep` finds the package by name in `.dart_tool/package_config.json`. A copy of this recipe made before the
-rename looks for `dart_db_connector_postgres`; change the name there when migrating.
+The contract package, [`slingshot`](https://pub.dev/packages/slingshot), comes with it. The app needs `libpq` where
+it runs (`apt install libpq5` or `brew install libpq`); see [Native library](#native-library) for AOT and Docker.
 
 ## Quickstart
 
@@ -96,7 +81,22 @@ Future<void> main() async {
 There is no binding to construct and no library to load by hand: the FFI binding is resolved internally, once
 per isolate.
 
-## What is included
+## The family
+
+| Package | Role |
+|---|---|
+| [`slingshot`](https://pub.dev/packages/slingshot) | The contract every driver implements. |
+| [`slingshot_postgres`](https://pub.dev/packages/slingshot_postgres) | This driver. |
+| [`orbiter`](https://pub.dev/packages/orbiter) | HTTP backend framework, no database dependency. |
+| [`orbiter_postgres`](https://pub.dev/packages/orbiter_postgres) | Kit for `orbiter` + this driver: one row-level-security transaction per request. |
+
+MySQL, MongoDB and SQLite drivers exist in the project and are not published yet.
+
+## Status
+
+Experimental (pre-1.0). Native ABI `MAJOR 2 / MINOR 6`.
+
+## API in detail
 
 - **`PostgresConnectionPool`** and **`PoolConfig`**: the native pool, with an acquire timeout, optional
   instrumentation (`acquireWaitUs`, `queueDepthAtAcquire`) and a graceful `close()`. When no connection frees up
@@ -144,6 +144,52 @@ per isolate.
   [Local PostgreSQL with TLS](#local-postgresql-with-tls).
 
 Not included yet: `LISTEN`/`NOTIFY` delivery, streaming replication, multi-host failover, Windows.
+
+## Native library
+
+The package ships the native library pre-built in `lib/_native/<os>-<arch>/` for `linux-x64`, `linux-arm64`,
+`macos-x64` and `macos-arm64`. It links dynamically against `libpq`, which must be installed where the app
+runs:
+
+| Platform | Runtime package |
+|---|---|
+| Debian / Ubuntu | `apt install libpq5` |
+| macOS | `brew install libpq` |
+
+Windows is not supported (the native pool uses pthreads).
+
+How the library is found, in order:
+
+1. `DART_DB_CONNECTOR_NATIVE_LIB_PATH`, an absolute path that overrides everything else.
+2. The directory of the running executable, or `lib/_native/<os>-<arch>/` next to it.
+3. `package:slingshot_postgres/_native/<os>-<arch>/`, the pre-built copy shipped in this package. It
+   resolves under `dart run` and `dart test` (JIT) only.
+4. `/usr/local/lib`.
+
+**AOT executables** (`dart compile exe`, container images) cannot resolve `package:` URIs at run time, so copy
+the library next to the executable:
+
+```dockerfile
+FROM dart:stable AS build
+WORKDIR /app
+COPY . .
+RUN dart pub get
+RUN dart compile exe bin/server.dart -o /app/server
+# Copy the pre-built library of the build platform from the resolved package.
+RUN ROOT=$(grep -o '"rootUri": *"file://[^"]*slingshot_postgres[^"]*"' \
+        .dart_tool/package_config.json | sed 's|.*file://||; s|"$||') \
+    && ARCH=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/') \
+    && cp "$ROOT/lib/_native/linux-$ARCH/libnative_db.so" /app/
+
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /app/server /app/libnative_db.so /app/
+ENTRYPOINT ["/app/server"]
+```
+
+The `grep` finds the package by name in `.dart_tool/package_config.json`. A copy of this recipe made before the
+rename looks for `dart_db_connector_postgres`; change the name there when migrating.
 
 ## Local PostgreSQL with TLS
 
@@ -236,6 +282,15 @@ dart test
 
 Tests that need a database expect PostgreSQL at `localhost:5432` (`dbname=teste user=postgres password=123`)
 and skip when it, or the native library, is unavailable.
+
+## Benchmarks and research
+
+The project started as an MBA thesis in Software Engineering at the University of São Paulo (USP). The code
+evaluated there, the cross-language benchmark suite (harnesses in six languages, Docker topologies, statistical
+aggregation) and the results are public at
+[tganzerli/dart_db_connector](https://github.com/tganzerli/dart_db_connector): see
+[`benchmarks/RESULTS.md`](https://github.com/tganzerli/dart_db_connector/blob/main/benchmarks/RESULTS.md) and the
+tag `tcc-baseline` for the evaluated state.
 
 ## License
 

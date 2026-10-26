@@ -4,6 +4,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.6
+
+Documentation only: README rewritten, shorter pubspec description. No API or ABI change.
+
 ## 0.1.5
 
 First release on pub.dev. Depends on `slingshot` (the contract package, formerly `slingshot_core`) from pub.dev,
