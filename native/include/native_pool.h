@@ -150,10 +150,20 @@ void pool_release(native_pool_t* pool, native_conn_t* conn);
 /// (`PQsendQuery` + `select`/`PQconsumeInput`/`PQisBusy` loop) and
 /// posts to `port_id` one of the codes in "Worker port codes" below.
 ///
+/// `sql` may hold several statements (Simple Query Protocol). The
+/// worker drains EVERY result before posting int64=1, so the caller's
+/// `poll_result` never waits on the network. It keeps only what the
+/// caller reads: `poll_result` yields the first result, then the first
+/// error result after it if there is one, then NULL. Other trailing
+/// results are cleared on arrival, keeping the worker's peak memory at
+/// the head plus one result. Until 2026-11-04 the worker posted as soon
+/// as the first result was complete, and the caller drained the rest
+/// with a blocking `PQgetResult`.
+///
 /// Returns 1 on dispatch success, 0 if `conn` already has a pending
 /// query (slot occupied) or if `PQsendQuery` failed.
 ///
-/// `timeout_ms`:
+/// `timeout_ms` (covers every result, not just the first):
 ///   * `0` → no timeout (block forever on the libpq side).
 ///   * `>0` → after that many ms the worker calls `PQcancel(conn)`
 ///            and posts int64=2.

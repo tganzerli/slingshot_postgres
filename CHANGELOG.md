@@ -4,6 +4,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.8
+
+### Fixed
+
+- A multi-statement string sent without parameters no longer stalls the isolate. The native worker used to report
+  the query done as soon as the first result was complete; when a later statement's output was large (64 KB was
+  enough), the first result arrived early and the Dart side waited for the rest on the isolate's thread, stopping
+  its event loop for as long as the slowest statement ran. The worker now drains every result first, and the
+  query `timeout` covers that wait, which it used to miss.
+- `COPY ... TO STDOUT` / `FROM STDIN`, which this package does not support, fails with `ConnectionLostException`,
+  timeout or not: the connection is reset at once, so the backend does not linger in COPY holding its locks, and
+  the session (an open transaction included) is gone. The reconnect has its own budget (5 s), outside the query
+  `timeout`, as when a link drops. It used to spin forever while the results were drained.
+
+No API or ABI change. The native library in `lib/_native/` is rebuilt for all four platforms: this is the first
+release since 0.1.0 that changes it.
+
 ## 0.1.7
 
 ### Fixed

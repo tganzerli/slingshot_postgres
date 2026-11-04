@@ -518,6 +518,12 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// keep the conn idle for the next dispatch. Mirrors the worker
   /// loop's drain-or-leak pattern.
   ///
+  /// Nothing here waits on the server for a multi-statement string: the
+  /// worker drained every result before it notified, so [_drainTrailing]
+  /// only dequeues (`native_pool.h`, `pool_submit_query`). Until
+  /// 2026-11-04 the simple path notified on the first result and this
+  /// drain blocked the isolate in `PQgetResult`, outside the timeout.
+  ///
   /// ABI MINOR 2: the head result's status is inspected — a SQL error
   /// (e.g. `SELECT * FROM missing_table`) previously surfaced as an
   /// empty [PostgresResultSet]; it now throws [QueryFailedException] carrying
@@ -555,6 +561,9 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// past the first statement is the last result — previously cleared
   /// unseen, leaving the caller with a success (outside a transaction,
   /// the implicit one had been rolled back).
+  ///
+  /// On the simple path the worker keeps only the head and the first
+  /// trailing error, so this loop sees at most one result past the head.
   String? _drainTrailing() {
     String? error;
     while (true) {

@@ -162,12 +162,151 @@ static int64_t flush_outgoing(native_conn_t* conn,
 // Single-query execution path
 // ─────────────────────────────────────────────────────────────────
 
+// Error statuses, the same set as `PgExecStatus.isError` on the Dart
+// side (lib/src/bindings/postgres_binding.dart).
+static int is_error_status(ExecStatusType st) {
+    return st == PGRES_FATAL_ERROR ||
+           st == PGRES_BAD_RESPONSE ||
+           st == PGRES_PIPELINE_ABORTED;
+}
+
+// Drains every PGresult of the dispatched query into the per-conn
+// chain, calling `PQgetResult` only while `PQisBusy` is false, so the
+// worker never blocks outside `select()` and the wait stays under the
+// deadline and the shutdown poll. Returns OK once `PQgetResult`
+// yields NULL. On timeout/shutdown/error it cancels when appropriate,
+// frees the partial chain and returns ABORTED. A COPY result resets
+// the slot and returns CONN_LOST (see the branch below).
+//
+// `head_and_first_error`: keep only the first result and the first
+// error result after it, clearing the rest on arrival. That is all the
+// simple path's consumer reads, and it keeps the peak memory at the
+// head plus one result instead of the sum of every result. When 0,
+// every result is kept (multi-read: the caller wants all of them).
+static int64_t drain_into_chain(native_conn_t* conn,
+                                PGconn* pg,
+                                int sock,
+                                int has_deadline,
+                                const struct timespec* deadline,
+                                int head_and_first_error) {
+    int have_head = 0;
+    int have_error = 0;
+    int link_lost = 0;
+    while (1) {
+        if (atomic_load(&conn->shutdown_requested)) {
+            issue_cancel(pg);
+            native_pool_free_result_chain(conn);
+            return WORKER_PORT_ABORTED;
+        }
+
+        if (!link_lost && PQisBusy(pg)) {
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(sock, &rfds);
+
+            struct timeval tv;
+            if (!next_select_tv(&tv, has_deadline, deadline)) {
+                // Wall-clock deadline expired.
+                issue_cancel(pg);
+                native_pool_free_result_chain(conn);
+                return WORKER_PORT_ABORTED;
+            }
+
+            int rc = select(sock + 1, &rfds, NULL, NULL, &tv);
+            if (rc < 0) {
+                if (errno == EINTR) continue;
+                native_pool_free_result_chain(conn);
+                return WORKER_PORT_ABORTED;
+            }
+            if (rc == 0) {
+                // Shutdown-poll tick or deadline — re-check at top.
+                continue;
+            }
+            if (PQconsumeInput(pg) == 0) {
+                if (head_and_first_error && have_head &&
+                    PQstatus(pg) == CONNECTION_BAD) {
+                    // The link died after the head was complete (e.g.
+                    // `pg_terminate_backend(pg_backend_pid())`, or a
+                    // crash before ReadyForQuery). The head's statement
+                    // ran, so aborting here would report a lost
+                    // connection for work the server did — a caller
+                    // retrying an INSERT would run it twice. Keep the
+                    // pre-2026-11-04 contract instead: post OK with the
+                    // head. libpq has dropped the socket, so the pulls
+                    // below return at once: its connection-error result
+                    // (kept as the first trailing error), then NULL. The
+                    // dead link is reported on the next exchange. Only
+                    // on CONNECTION_BAD: a read failure that left the
+                    // socket open (out of memory) would make those pulls
+                    // block, so it aborts like any other failure.
+                    link_lost = 1;
+                } else {
+                    native_pool_free_result_chain(conn);
+                    return WORKER_PORT_ABORTED;
+                }
+            }
+            if (!link_lost) continue;
+        }
+
+        // Not busy → safe to pull one result without blocking.
+        PGresult* r = PQgetResult(pg);
+        if (r == NULL) break;  // every statement drained
+        ExecStatusType st = PQresultStatus(r);
+        if (st == PGRES_COPY_OUT || st == PGRES_COPY_IN ||
+            st == PGRES_COPY_BOTH) {
+            // COPY is not supported on these paths. In a COPY state
+            // libpq hands back a fresh PGRES_COPY_* result on every
+            // `PQgetResult` and never NULL, with `PQisBusy` false, so
+            // this loop would spin past the deadline and hold the slot.
+            // Reconnect now rather than flag the slot for later:
+            // `pool_acquire` picks an unhealthy slot only when no
+            // healthy one is free, so a deferred reset could leave the
+            // backend in COPY, holding its locks and transaction, for
+            // as long as the pool stays idle. The reset discards the
+            // session, so report CONN_LOST: this query is gone and its
+            // transaction is poisoned (see worker_classify_failure).
+            PQclear(r);
+            native_pool_free_result_chain(conn);
+            atomic_store(&conn->health, CONN_HEALTH_LOST);
+            native_pool_worker_reset(conn);
+            return WORKER_PORT_CONN_LOST;
+        }
+        if (head_and_first_error) {
+            int keep = !have_head ||
+                       (!have_error && is_error_status(st));
+            if (!keep) {
+                PQclear(r);
+                continue;
+            }
+            if (have_head) have_error = 1;
+            have_head = 1;
+        }
+        if (!native_pool_chain_append(conn, r)) {
+            PQclear(r);
+            native_pool_free_result_chain(conn);
+            return WORKER_PORT_ABORTED;
+        }
+        // Loop; PQisBusy re-checked before the next PQgetResult.
+    }
+    return WORKER_PORT_OK;
+}
+
+// The worker drains every result before posting OK, as the multi-read
+// path does. It used to post as soon as the FIRST result was complete
+// (`!PQisBusy`); with a multi-statement string whose later output
+// overflowed the server's send buffer, the head arrived early and the
+// Dart side waited for the rest in a blocking `PQgetResult` on the
+// isolate's thread, outside the query deadline.
 static int64_t execute_single(native_conn_t* conn,
                               const char* sql,
                               int64_t timeout_ms) {
     PGconn* pg = conn->pg;
     int sock = PQsocket(pg);
     if (sock < 0) return WORKER_PORT_ABORTED;
+
+    // Defensive, as in execute_multi_read: a conn reused without
+    // release must not hand stale results to this query.
+    native_pool_free_result_chain(conn);
 
     if (PQsendQuery(pg, sql) != 1) {
         // libpq did not accept the dispatch (bad state, malformed
@@ -188,44 +327,9 @@ static int64_t execute_single(native_conn_t* conn,
         return WORKER_PORT_ABORTED;
     }
 
-    while (1) {
-        if (atomic_load(&conn->shutdown_requested)) {
-            issue_cancel(pg);
-            return WORKER_PORT_ABORTED;
-        }
-
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(sock, &rfds);
-
-        struct timeval tv;
-        if (!next_select_tv(&tv, has_deadline, &deadline)) {
-            // Wall-clock deadline expired.
-            issue_cancel(pg);
-            return WORKER_PORT_ABORTED;
-        }
-
-        int rc = select(sock + 1, &rfds, NULL, NULL, &tv);
-        if (rc < 0) {
-            if (errno == EINTR) continue;
-            // Hard select() error — bail.
-            return WORKER_PORT_ABORTED;
-        }
-        if (rc == 0) {
-            // Shutdown-poll wake-up OR deadline expired.
-            // Loop will re-check both flags at the top.
-            continue;
-        }
-        if (PQconsumeInput(pg) == 0) {
-            return WORKER_PORT_ABORTED;
-        }
-        if (!PQisBusy(pg)) {
-            // Result is sitting in libpq's queue; Dart will drain
-            // via `poll_result` after the int64=1 notification.
-            return WORKER_PORT_OK;
-        }
-        // Partial frame — keep iterating.
-    }
+    // Results sit in the chain; Dart dequeues them via `poll_result`
+    // after the int64=1 notification.
+    return drain_into_chain(conn, pg, sock, has_deadline, &deadline, 1);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -497,61 +601,14 @@ static int64_t execute_multi_read(native_conn_t* conn,
     struct timespec deadline;
     if (has_deadline) compute_deadline(&deadline, timeout_ms);
 
-    // Spin-free flush; free the partial chain on abort like the paths below.
+    // Spin-free flush; free the partial chain on abort, as drain_into_chain does.
     if (flush_outgoing(conn, pg, sock, has_deadline, &deadline)
             != WORKER_PORT_OK) {
         native_pool_free_result_chain(conn);
         return WORKER_PORT_ABORTED;
     }
 
-    while (1) {
-        if (atomic_load(&conn->shutdown_requested)) {
-            issue_cancel(pg);
-            native_pool_free_result_chain(conn);
-            return WORKER_PORT_ABORTED;
-        }
-
-        if (PQisBusy(pg)) {
-            fd_set rfds;
-            FD_ZERO(&rfds);
-            FD_SET(sock, &rfds);
-
-            struct timeval tv;
-            if (!next_select_tv(&tv, has_deadline, &deadline)) {
-                issue_cancel(pg);
-                native_pool_free_result_chain(conn);
-                return WORKER_PORT_ABORTED;
-            }
-
-            int rc = select(sock + 1, &rfds, NULL, NULL, &tv);
-            if (rc < 0) {
-                if (errno == EINTR) continue;
-                native_pool_free_result_chain(conn);
-                return WORKER_PORT_ABORTED;
-            }
-            if (rc == 0) {
-                // Shutdown-poll tick or deadline — re-check at top.
-                continue;
-            }
-            if (PQconsumeInput(pg) == 0) {
-                native_pool_free_result_chain(conn);
-                return WORKER_PORT_ABORTED;
-            }
-            continue;
-        }
-
-        // Not busy → safe to pull one result without blocking.
-        PGresult* r = PQgetResult(pg);
-        if (r == NULL) break;  // whole multi-statement drained
-        if (!native_pool_chain_append(conn, r)) {
-            PQclear(r);
-            native_pool_free_result_chain(conn);
-            return WORKER_PORT_ABORTED;
-        }
-        // Loop; PQisBusy re-checked before the next PQgetResult.
-    }
-
-    return WORKER_PORT_OK;
+    return drain_into_chain(conn, pg, sock, has_deadline, &deadline, 0);
 }
 
 // ─────────────────────────────────────────────────────────────────

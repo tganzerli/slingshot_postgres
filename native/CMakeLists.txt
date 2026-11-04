@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(native_db
-    VERSION 0.1.0
+    VERSION 0.1.1
     DESCRIPTION "C wrapper over libpq with Dart Native Ports for async I/O"
     LANGUAGES C
 )
