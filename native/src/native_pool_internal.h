@@ -105,8 +105,9 @@ struct native_conn {
 /// shutdown budget promised by `pool_destroy` still holds.
 ///
 /// Returns 1 on success (health reset to OK), 0 otherwise.
-/// Defined in `native_pool_worker.c`; only the worker may call it,
-/// because only the worker may touch `conn->pg` (libpq §32.21).
+/// Defined in `native_pool_worker.c`; only the worker may call it. The
+/// worker owns `conn->pg` while an operation is in flight (libpq §32.21);
+/// between operations `poll_result` reads it from the caller's thread.
 int native_pool_worker_reset(native_conn_t* conn);
 
 /// Pool state. Owns the connection array, the global free-list

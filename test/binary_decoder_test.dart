@@ -586,4 +586,35 @@ void main() {
       expect(jb['x'], true);
     });
   });
+
+  // The input stands in for the zero-copy view over the PGresult: the
+  // returned bytes must not alias it, or they die with `release()`.
+  group('type without a decoder', () {
+    const unknownOid = 1007; // int4[], no decoder on either path
+
+    for (final (name, decode) in [
+      ('text', decodeByOid),
+      ('binary', decodeByOidBinary),
+    ]) {
+      test('$name path returns an owned copy', () {
+        final source = Uint8List.fromList([0x7b, 0x31, 0x2c, 0x32, 0x7d]);
+        final out = decode(source, unknownOid) as Uint8List;
+        expect(out, source);
+        expect(identical(out, source), isFalse);
+        source.fillRange(0, source.length, 0x55);
+        expect(out, [0x7b, 0x31, 0x2c, 0x32, 0x7d]);
+      });
+    }
+
+    // `bytea_output = 'escape'` sends no `\x` prefix; that branch used to
+    // hand back the view itself.
+    test('text bytea outside the hex format returns an owned copy', () {
+      final source = Uint8List.fromList('abc'.codeUnits);
+      final out = decodeByOid(source, PostgresOid.bytea) as Uint8List;
+      expect(out, 'abc'.codeUnits);
+      expect(identical(out, source), isFalse);
+      source.fillRange(0, source.length, 0x55);
+      expect(out, 'abc'.codeUnits);
+    });
+  });
 }

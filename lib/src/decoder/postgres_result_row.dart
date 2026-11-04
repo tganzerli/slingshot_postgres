@@ -4,11 +4,10 @@
 /// introspection (MINOR 4). Decodes values in text-mode (the default
 /// returned by `PQsendQuery`).
 ///
-/// **Lifetime:** [PostgresResultSet] and any [PostgresResultRow]s derived from it are
-/// valid only while the underlying `PGresult*` is alive. The current
-/// PoC code releases via `binding.closeDb(conn)` (which clears all
-/// pending results). A future `PQclear`-equivalent on the ABI will
-/// give finer-grained control.
+/// **Lifetime:** rows read cells from the underlying `PGresult*`, so they
+/// are readable only until [PostgresResultSet.release] frees it; after
+/// that, reading a cell throws a [StateError]. Decoded values are owned
+/// Dart objects and outlive the release.
 library;
 
 import 'dart:ffi' as ffi;
@@ -138,9 +137,14 @@ class PostgresResultSet {
   }
 
   /// Frees the underlying `PGresult` immediately and detaches the
-  /// finalizer. Idempotent. After calling, accessing any [PostgresResultRow]
-  /// from this set is undefined behaviour. If not called explicitly,
-  /// the finalizer cleans up when the object is garbage-collected.
+  /// finalizer. Idempotent.
+  /// After calling, reading a cell from any row of this set, or calling
+  /// [row] or [rows], throws a [StateError]; a `rows` iterable taken before
+  /// the release throws on the first cell read. Values already read stay
+  /// valid, since every decoded value is an owned Dart object. Metadata
+  /// ([columnNames], [rowCount], [typeOf]) stays readable. If not called
+  /// explicitly, the finalizer cleans up when the object is
+  /// garbage-collected.
   void release() {
     if (_released) return;
     _released = true;
@@ -154,14 +158,22 @@ class PostgresResultSet {
 
   /// Returns the [PostgresResultRow] at index [i].
   PostgresResultRow row(int i) {
+    if (_released) _throwReleased();
     RangeError.checkValueInInterval(i, 0, rowCount - 1, 'i');
     return PostgresResultRow._(this, i);
   }
 
   /// Lazy iterable over rows in result order. Indexed generation avoids
   /// the `sync*` state-machine overhead on the read hot path.
-  Iterable<PostgresResultRow> get rows =>
-      Iterable.generate(rowCount, (i) => PostgresResultRow._(this, i));
+  Iterable<PostgresResultRow> get rows {
+    if (_released) _throwReleased();
+    return Iterable.generate(rowCount, (i) => PostgresResultRow._(this, i));
+  }
+
+  // Out of line so the per-cell path keeps only the load and the branch.
+  static Never _throwReleased() => throw StateError(
+      'PostgresResultSet was released; its rows can no longer be read. '
+      'Copy the values you need before calling release().');
 
   /// Returns the [PostgresType] tag for column [col] (by index or name).
   PostgresType typeOf(Object col) {
@@ -190,8 +202,12 @@ class PostgresResultSet {
 /// Access columns by integer index or by name via `row[col]`. Typed
 /// helpers ([getInt], [getString], [getDateTime], etc.) cast the value
 /// to a Dart type; SQL NULL surfaces as `null`. For exotic OIDs not
-/// mapped in [PostgresType], `row[col]` returns a raw `Uint8List`
-/// (zero-copy view over the libpq buffer).
+/// mapped in [PostgresType], `row[col]` returns the raw bytes as an owned
+/// `Uint8List` copy.
+///
+/// A row reads from its parent set's native result: once
+/// [PostgresResultSet.release] has run, reading a cell throws a
+/// [StateError].
 class PostgresResultRow {
   final PostgresResultSet _set;
   final int _index;
@@ -202,8 +218,10 @@ class PostgresResultRow {
   int get index => _index;
 
   /// Decoded value for column [key] (by `int` index or `String` name).
-  /// Returns `null` when the underlying cell is SQL NULL.
+  /// Returns `null` when the underlying cell is SQL NULL. Throws a
+  /// [StateError] once the parent set has been released.
   Object? operator [](Object key) {
+    if (_set._released) PostgresResultSet._throwReleased();
     final col = _set._resolve(key);
     final binding = _set._binding!;
     final result = _set._result!;
@@ -243,8 +261,9 @@ class PostgresResultRow {
   DateTime? getDateTime(Object key) => this[key] as DateTime?;
   Object? getJson(Object key) => this[key];
 
-  /// Returns the bytes of the cell as a `Uint8List` (zero-copy view).
-  /// Returns `null` on SQL NULL.
+  /// Returns the cell value, or `null` on SQL NULL. `bytea` and types
+  /// without a decoder are an owned `Uint8List` copy, valid after the
+  /// result set is released. Other types return their decoded value.
   Object? getBytes(Object key) => this[key];
 
   /// Materialises the row as a `Map<String, Object?>` (eager decode of
@@ -257,5 +276,7 @@ class PostgresResultRow {
   }
 
   @override
-  String toString() => toMap().toString();
+  String toString() => _set._released
+      ? 'PostgresResultRow($_index, released)'
+      : toMap().toString();
 }

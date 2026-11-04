@@ -85,7 +85,9 @@ Object decodeByOid(Uint8List bytes, int oid) {
     PostgresOid.date => _parsePostgresDate(_asciiString(bytes)),
     // Text-mode uuid already arrives canonical and lowercase, pure ASCII.
     PostgresOid.uuid => _asciiString(bytes),
-    _ => bytes, // unknown OID → return raw bytes
+    // Owned copy: [bytes] is a view into the PGresult and would outlive
+    // `PostgresResultSet.release()` (Dart-C boundary audit, 2026-11-02).
+    _ => Uint8List.fromList(bytes), // unknown OID → raw bytes, owned
   };
 }
 
@@ -201,8 +203,9 @@ Uint8List _decodeByteaHex(Uint8List bytes) {
   if (bytes.length < 2 ||
       bytes[0] != 0x5C /* \ */ ||
       bytes[1] != 0x78 /* x */) {
-    // Older escape format (\nnn octal) — not supported here; return as-is.
-    return bytes;
+    // Older escape format (\nnn octal) — not decoded here; returned as-is,
+    // but owned: [bytes] is a view into the PGresult.
+    return Uint8List.fromList(bytes);
   }
   final hex = bytes.sublist(2);
   if (hex.length.isOdd) {
@@ -294,7 +297,8 @@ Object decodeByOidBinary(Uint8List bytes, int oid) {
     PostgresOid.date => _binaryToDate(bytes),
     PostgresOid.uuid => _uuidFromBytes(bytes),
     PostgresOid.numeric => _binaryToNumeric(bytes),
-    _ => bytes, // unknown OID → raw bytes
+    // Owned copy, same reason as the text path.
+    _ => Uint8List.fromList(bytes), // unknown OID → raw bytes, owned
   };
 }
 

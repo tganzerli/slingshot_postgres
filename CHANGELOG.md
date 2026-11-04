@@ -4,6 +4,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.7
+
+### Fixed
+
+- Reading a cell from a `PostgresResultRow` after `PostgresResultSet.release()` throws a `StateError`, as do
+  `row()` and `rows`. It used to read the freed `PGresult`: in practice a silent `null`, indistinguishable from
+  SQL NULL, though nothing guaranteed even that. Metadata (`columnNames`, `rowCount`, `typeOf`) stays readable,
+  and `toString()` on a released row no longer touches the result.
+- A type without a decoder (`int4[]`, `inet`, ...), and text-mode `bytea` outside the hex format
+  (`bytea_output = 'escape'`), return their raw bytes as an owned `Uint8List` copy. They used to return a view into
+  the `PGresult`: a view kept past `release()` could show bytes of a later query on the same isolate.
+
+No API or ABI change; the native library is the one shipped since 0.1.0.
+
 ## 0.1.6
 
 Documentation only: README rewritten, shorter pubspec description. No API or ABI change.

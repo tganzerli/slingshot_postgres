@@ -480,8 +480,9 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
         sw.reset();
       }
     } finally {
-      // The C side dup-copied; safe to free our buffers as soon as
-      // dispatch returned (even before the worker finishes).
+      // The C side dup-copied, so these buffers were never needed past
+      // dispatch. They are freed here, once dispatch returned and, on
+      // success, the worker has replied.
       malloc.free(sqlPtr);
       if (prefixPtr != null) malloc.free(prefixPtr);
       for (final p in prefixAllocated) {

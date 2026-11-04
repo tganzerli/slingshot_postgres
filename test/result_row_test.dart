@@ -199,4 +199,89 @@ void main() {
       _dispose(r);
     });
   });
+
+  // Dart-C boundary audit (2026-11-02): nothing handed to the caller may
+  // depend on native memory once `release()` has run.
+  group('after release()', () {
+    // Only a reliable regression guard under `MallocScribble=1` (macOS),
+    // which overwrites freed blocks with 0x55: without it a stale view may
+    // still read the old bytes and pass by luck. The deterministic guard
+    // is the unit test in binary_decoder_test.dart.
+    test('a type without a decoder keeps its own bytes past release', () async {
+      final r =
+          await _runQuery("SELECT '{1,2}'::int4[] AS a, '10.0.0.1'::inet AS b");
+      if (r == null) {
+        markTestSkipped('Postgres not reachable');
+        return;
+      }
+
+      final rs = PostgresResultSet.fromResult(r.binding, r.result);
+      final row = rs.row(0);
+      final a = row['a'] as Uint8List;
+      final b = row['b'] as Uint8List;
+      expect(String.fromCharCodes(a), '{1,2}');
+      expect(String.fromCharCodes(b), '10.0.0.1');
+      rs.release();
+
+      // Same connection, same result shape: the allocator is free to hand
+      // the old PGresult block to this query.
+      while (true) {
+        final extra = r.binding.pollResult(r.conn.ptr);
+        if (extra == ffi.nullptr) break;
+        r.binding.clearResult(extra);
+      }
+      final port = ReceivePort();
+      final sqlPtr =
+          "SELECT '{9,8}'::int4[] AS a, '99.9.9.9'::inet AS b".toNativeUtf8();
+      expect(
+          r.binding
+              .poolSubmitQuery(r.conn.ptr, sqlPtr, port.sendPort.nativePort, 0),
+          1);
+      malloc.free(sqlPtr);
+      await port.first;
+      port.close();
+      final second = PostgresResultSet.fromResult(
+          r.binding, r.binding.pollResult(r.conn.ptr));
+      expect(String.fromCharCodes(second.row(0)['a'] as Uint8List), '{9,8}');
+
+      expect(String.fromCharCodes(a), '{1,2}');
+      expect(String.fromCharCodes(b), '10.0.0.1');
+
+      second.release();
+      _dispose(r);
+    });
+
+    test('reading a retained row throws StateError', () async {
+      final r = await _runQuery(
+          "SELECT 7::int4 AS c, 'hello'::text AS d, '{1,2}'::int4[] AS a");
+      if (r == null) {
+        markTestSkipped('Postgres not reachable');
+        return;
+      }
+
+      final rs = PostgresResultSet.fromResult(r.binding, r.result);
+      final row = rs.row(0);
+      expect(row.getInt('c'), 7);
+      rs.release();
+
+      expect(() => row['c'], throwsStateError);
+      expect(() => row[1], throwsStateError);
+      expect(() => row.getString('d'), throwsStateError);
+      expect(() => row.getBytes('a'), throwsStateError);
+      expect(() => row.toMap(), throwsStateError);
+      expect(() => row['no_such_column'], throwsStateError,
+          reason: 'the released state is the real cause, not the name');
+      expect(() => rs.row(0), throwsStateError);
+      expect(() => rs.rows, throwsStateError);
+      expect(row.toString(), contains('released'),
+          reason: 'printing a row while debugging must not throw');
+
+      // Metadata lives on the Dart side and stays readable.
+      expect(rs.columnNames, ['c', 'd', 'a']);
+      expect(rs.rowCount, 1);
+
+      rs.release(); // idempotent, does not throw
+      _dispose(r);
+    });
+  });
 }
