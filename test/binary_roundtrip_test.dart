@@ -178,8 +178,9 @@ void main() {
       expect([got.year, got.month, got.day], [2026, 5, 17]);
       expect(got.isUtc, isFalse);
       // Pre-epoch, to exercise the signed int32 against a real server.
-      final old = await _roundtrip(pool, 'date', Param.date(DateTime(1970, 1, 1)))
-          as DateTime;
+      final old =
+          await _roundtrip(pool, 'date', Param.date(DateTime(1970, 1, 1)))
+              as DateTime;
       expect([old.year, old.month, old.day], [1970, 1, 1]);
     });
 
@@ -196,8 +197,7 @@ void main() {
     test('int4', () async {
       expect(await _roundtrip(pool, 'int4', Param.int4(123456)), 123456);
       expect(
-          await _roundtrip(pool, 'int4', Param.int4(-0x80000000)),
-          -0x80000000);
+          await _roundtrip(pool, 'int4', Param.int4(-0x80000000)), -0x80000000);
     });
 
     test('int8', () async {
@@ -227,8 +227,8 @@ void main() {
 
     test('bpchar (blank-padded char)', () async {
       // bpchar(8) pads the value with spaces to width 8.
-      expect(await _roundtrip(pool, 'char(8)', Param.bpchar('abc')),
-          'abc     ');
+      expect(
+          await _roundtrip(pool, 'char(8)', Param.bpchar('abc')), 'abc     ');
     });
 
     test('json', () async {
@@ -252,8 +252,8 @@ void main() {
 
     test('timestamp', () async {
       final ts = DateTime.utc(2026, 5, 23, 14, 30, 45, 123, 456);
-      final v = await _roundtrip(pool, 'timestamp', Param.timestamp(ts))
-          as DateTime;
+      final v =
+          await _roundtrip(pool, 'timestamp', Param.timestamp(ts)) as DateTime;
       // Changed 2026-09-10: `timestamp` decodes naive, so comparing
       // epoch microseconds would measure the runner's UTC offset rather
       // than the round-trip. The wall-clock reading is what survives.
@@ -266,25 +266,22 @@ void main() {
 
     test('timestamptz', () async {
       final ts = DateTime.utc(2026, 5, 23, 14, 30, 45, 123, 456);
-      final v =
-          await _roundtrip(pool, 'timestamptz', Param.timestamptz(ts))
-              as DateTime;
+      final v = await _roundtrip(pool, 'timestamptz', Param.timestamptz(ts))
+          as DateTime;
       expect(v.microsecondsSinceEpoch, ts.microsecondsSinceEpoch);
     });
   });
 
   group('SQL NULL roundtrip via Param.nullValue', () {
-    test('nullValue(text) inserts SQL NULL and reads back as null',
-        () async {
-      final v = await _roundtrip(
-          pool, 'text', Param.nullValue(PostgresOid.text));
+    test('nullValue(text) inserts SQL NULL and reads back as null', () async {
+      final v =
+          await _roundtrip(pool, 'text', Param.nullValue(PostgresOid.text));
       expect(v, isNull);
     });
 
-    test('nullValue(int4) inserts SQL NULL and reads back as null',
-        () async {
-      final v = await _roundtrip(
-          pool, 'int4', Param.nullValue(PostgresOid.int4));
+    test('nullValue(int4) inserts SQL NULL and reads back as null', () async {
+      final v =
+          await _roundtrip(pool, 'int4', Param.nullValue(PostgresOid.int4));
       expect(v, isNull);
     });
   });

@@ -99,7 +99,8 @@ void main() {
           decode('48656c6c6f','hex')::bytea          AS bin
       """);
       if (r == null) {
-        markTestSkipped('Postgres not reachable — start PostgreSQL at localhost:5432');
+        markTestSkipped(
+            'Postgres not reachable — start PostgreSQL at localhost:5432');
         return;
       }
 

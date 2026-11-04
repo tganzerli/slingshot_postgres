@@ -78,7 +78,8 @@ void _dispose(_QueryRun r) {
 /// Skips the enclosing test when the DB/lib is unavailable.
 bool _skipIfNull(_QueryRun? r) {
   if (r == null) {
-    markTestSkipped('Postgres not reachable — start PostgreSQL at localhost:5432');
+    markTestSkipped(
+        'Postgres not reachable — start PostgreSQL at localhost:5432');
     return true;
   }
   return false;
@@ -185,8 +186,8 @@ void main() {
       final ru = await _runQuery(bigSelect);
 
       final cached = PostgresResultSet.fromResult(rc!.binding, rc.result);
-      final uncached =
-          PostgresResultSet.fromResult(ru!.binding, ru.result, usePlanCache: false);
+      final uncached = PostgresResultSet.fromResult(ru!.binding, ru.result,
+          usePlanCache: false);
 
       final rowC = cached.row(0);
       final rowU = uncached.row(0);

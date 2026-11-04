@@ -11,5 +11,6 @@ import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
 
 void main() {
   loadNativeDb();
-  print('libnative_db loaded, ABI $kExpectedAbiMajor.$kExpectedAbiMinor compatible');
+  print(
+      'libnative_db loaded, ABI $kExpectedAbiMajor.$kExpectedAbiMinor compatible');
 }

@@ -149,8 +149,7 @@ void main() {
       expect(p.format, 1);
       final bytes = _encode(p);
       expect(bytes[0], 0x01, reason: 'jsonb version byte must be 0x01');
-      expect(
-          Uint8List.fromList(bytes.sublist(1)),
+      expect(Uint8List.fromList(bytes.sublist(1)),
           Uint8List.fromList('{"k":1}'.codeUnits));
     });
   });
@@ -181,7 +180,8 @@ void main() {
       expect(v, 1000000);
     });
 
-    test('timestamptz: pre-epoch (1999-12-31 23:59:59 UTC) → -1_000_000 µs', () {
+    test('timestamptz: pre-epoch (1999-12-31 23:59:59 UTC) → -1_000_000 µs',
+        () {
       final ts = DateTime.utc(1999, 12, 31, 23, 59, 59);
       final bytes = _encode(Param.timestamptz(ts));
       final v = ByteData.sublistView(bytes).getInt64(0, Endian.big);

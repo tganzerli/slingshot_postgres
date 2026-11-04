@@ -32,7 +32,9 @@ PostgresBinding _binding() {
 }
 
 Future<PostgresConnectionPool> _freshPool(PostgresBinding b) async {
-  final pool = PostgresConnectionPool.withBinding(b, const PoolConfig(connInfo: _connInfo, minSize: 1, maxSize: 2),
+  final pool = PostgresConnectionPool.withBinding(
+    b,
+    const PoolConfig(connInfo: _connInfo, minSize: 1, maxSize: 2),
   );
   await pool.start();
   return pool;
@@ -84,11 +86,9 @@ class _MixedTierRepository extends PostgresRepository<_Mix, int> {
   @override
   String selectAllSql() => 'SELECT id FROM mix ORDER BY id';
   @override
-  String selectByIdSql(int id) =>
-      throw StateError('use selectByIdSqlParams');
+  String selectByIdSql(int id) => throw StateError('use selectByIdSqlParams');
   @override
-  String insertSql(_Mix entity) =>
-      'INSERT INTO mix (id) VALUES (${entity.id})';
+  String insertSql(_Mix entity) => 'INSERT INTO mix (id) VALUES (${entity.id})';
   @override
   String updateSql(_Mix entity) =>
       'UPDATE mix SET id=${entity.id} WHERE id=${entity.id}';
@@ -126,8 +126,7 @@ void main() {
       expect(fake.paramsLog.single, isEmpty);
     });
 
-    test('Tier 2 override (*SqlParams) takes precedence over Tier 1',
-        () async {
+    test('Tier 2 override (*SqlParams) takes precedence over Tier 1', () async {
       // A repository that opts in to PS-binary only for findById
       // (e.g. id comes from an untrusted HTTP path) while keeping
       // String path elsewhere.

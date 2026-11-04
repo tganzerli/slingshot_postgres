@@ -57,7 +57,8 @@ void main() {
     try {
       await pool.start();
     } on NativePoolStartupException {
-      markTestSkipped('Postgres not reachable — start PostgreSQL at localhost:5432');
+      markTestSkipped(
+          'Postgres not reachable — start PostgreSQL at localhost:5432');
       return null;
     }
     return pool;

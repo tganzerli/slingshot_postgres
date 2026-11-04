@@ -130,8 +130,8 @@ void main() {
 
   group('ConnectionLostException', () {
     test('says the statement was not retried when the slot recovered', () {
-      const e = ConnectionLostException(sql: 'INSERT INTO t VALUES (1)',
-          reconnected: true);
+      const e = ConnectionLostException(
+          sql: 'INSERT INTO t VALUES (1)', reconnected: true);
       expect(e.toString(), contains('NOT retried'));
       expect(e.toString(), contains('INSERT INTO t VALUES (1)'));
     });
@@ -175,8 +175,8 @@ void main() {
       _drainAll(binding, conn.ptr);
 
       expect(
-        await _submitRaw(binding, conn.ptr,
-            'SELECT pg_terminate_backend(pg_backend_pid())'),
+        await _submitRaw(
+            binding, conn.ptr, 'SELECT pg_terminate_backend(pg_backend_pid())'),
         WorkerPortCode.ok,
         reason: 'the kill statement itself still answers',
       );
@@ -201,11 +201,10 @@ void main() {
       conn.release();
     }, timeout: const Timeout(Duration(seconds: 30)));
 
-    test('the slot recovers by itself, so the pool survives a blink',
-        () async {
+    test('the slot recovers by itself, so the pool survives a blink', () async {
       final conn = pool.acquire(timeout: const Duration(seconds: 5));
-      await _submitRaw(binding!, conn.ptr,
-          'SELECT pg_terminate_backend(pg_backend_pid())');
+      await _submitRaw(
+          binding!, conn.ptr, 'SELECT pg_terminate_backend(pg_backend_pid())');
       _drainAll(binding, conn.ptr);
       // Surface the loss, so the worker classifies and reconnects.
       await _submitRaw(binding, conn.ptr, 'SELECT 2::int4');

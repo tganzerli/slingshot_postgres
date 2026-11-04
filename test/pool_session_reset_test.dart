@@ -47,7 +47,8 @@ void main() {
     try {
       await pool.start();
     } on NativePoolStartupException {
-      markTestSkipped('Postgres not reachable — start PostgreSQL at localhost:5432');
+      markTestSkipped(
+          'Postgres not reachable — start PostgreSQL at localhost:5432');
       return null;
     }
     return pool;
@@ -122,7 +123,8 @@ void main() {
         'CREATE TEMP TABLE reset_probe (x int)',
         'SELECT pg_advisory_lock(424242)::text AS v',
       ]);
-      expect(await borrow(pool, ["SELECT current_setting('search_path') AS v"]), isNot('pg_catalog'));
+      expect(await borrow(pool, ["SELECT current_setting('search_path') AS v"]),
+          isNot('pg_catalog'));
       expect(
           await borrow(pool, [
             "SELECT count(*)::text AS v FROM pg_class "

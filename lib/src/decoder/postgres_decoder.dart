@@ -58,7 +58,8 @@ Object decodeByOid(Uint8List bytes, int oid) {
     PostgresOid.int4 ||
     PostgresOid.int8 =>
       int.parse(_asciiString(bytes)),
-    PostgresOid.float4 || PostgresOid.float8 =>
+    PostgresOid.float4 ||
+    PostgresOid.float8 =>
       double.parse(_asciiString(bytes)),
     // `numeric` is arbitrary-precision decimal; the text the server sent
     // is already exact, so it is kept rather than parsed into a double.
@@ -359,8 +360,8 @@ DateTime _binaryToDateTime(Uint8List bytes, {required bool utc}) {
   if (utc) return asUtc;
   // Same wall-clock reading, no zone claim — mirrors what DateTime.parse
   // produces for a text `timestamp` with no offset suffix.
-  return DateTime(asUtc.year, asUtc.month, asUtc.day, asUtc.hour,
-      asUtc.minute, asUtc.second, asUtc.millisecond, asUtc.microsecond);
+  return DateTime(asUtc.year, asUtc.month, asUtc.day, asUtc.hour, asUtc.minute,
+      asUtc.second, asUtc.millisecond, asUtc.microsecond);
 }
 
 /// Binary `numeric`: four `int16` of header, then `ndigits` base-10000
@@ -438,7 +439,9 @@ PostgresNumeric _binaryToNumeric(Uint8List bytes) {
       final group = (d >= 0 && d < ndigits) ? digits[d] : 0;
       frac.write(group.toString().padLeft(4, '0'));
     }
-    sb..write('.')..write(frac.toString().substring(0, dscale));
+    sb
+      ..write('.')
+      ..write(frac.toString().substring(0, dscale));
   }
 
   return PostgresNumeric.fromText(sb.toString());

@@ -51,8 +51,7 @@ NativePool? _spawn(PostgresBinding binding, {required int maxSize}) {
 /// and waits for the worker notification. Returns the integer value
 /// drained from `pollResult`, or `null` if the worker aborted
 /// (timeout / dispatch error).
-Future<int?> _runSelect(
-    PostgresBinding binding, dynamic conn, int i) async {
+Future<int?> _runSelect(PostgresBinding binding, dynamic conn, int i) async {
   final ffi.Pointer<ffi.Void> connPtr =
       conn is NativeConn ? conn.ptr : conn.raw as ffi.Pointer<ffi.Void>;
   final port = ReceivePort();
@@ -132,7 +131,9 @@ void main() {
       // `NativePool.acquire` directly — the latter is a SYNCHRONOUS
       // blocking C call, and >maxSize concurrent acquires from a
       // single isolate would deadlock the event loop.
-      final pool = PostgresConnectionPool.withBinding(binding, const PoolConfig(
+      final pool = PostgresConnectionPool.withBinding(
+        binding,
+        const PoolConfig(
           connInfo: _connInfo,
           minSize: 4,
           maxSize: 4,

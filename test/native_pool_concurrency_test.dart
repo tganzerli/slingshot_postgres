@@ -54,7 +54,9 @@ void main() {
       const queryCount = 10000;
       const poolSize = 8;
 
-      final pool = PostgresConnectionPool.withBinding(binding, const PoolConfig(
+      final pool = PostgresConnectionPool.withBinding(
+        binding,
+        const PoolConfig(
           connInfo: _connInfo,
           minSize: poolSize,
           maxSize: poolSize,
@@ -93,8 +95,7 @@ void main() {
       // Surface a rough TPS number for ad-hoc inspection. Not asserted
       // — too sensitive to local machine load.
       final tps = queryCount / (stopwatch.elapsedMilliseconds / 1000);
-      printOnFailure(
-          '10k queries in ${stopwatch.elapsedMilliseconds} ms '
+      printOnFailure('10k queries in ${stopwatch.elapsedMilliseconds} ms '
           '(~${tps.toStringAsFixed(0)} TPS)');
 
       await pool.close();

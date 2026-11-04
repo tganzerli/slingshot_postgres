@@ -68,7 +68,9 @@ void main() {
         'host=127.0.0.1 port=1 connect_timeout=1 dbname=x user=x password=x';
 
     test('start fails with NativePoolStartupException', () async {
-      final pool = PostgresConnectionPool.withBinding(binding, const PoolConfig(connInfo: unreachable, minSize: 0, maxSize: 2),
+      final pool = PostgresConnectionPool.withBinding(
+        binding,
+        const PoolConfig(connInfo: unreachable, minSize: 0, maxSize: 2),
       );
       await expectLater(
         pool.start(),
@@ -77,7 +79,9 @@ void main() {
     });
 
     test('start with minSize > 0 also fails (no lazy fallback)', () async {
-      final pool = PostgresConnectionPool.withBinding(binding, const PoolConfig(connInfo: unreachable, minSize: 1, maxSize: 2),
+      final pool = PostgresConnectionPool.withBinding(
+        binding,
+        const PoolConfig(connInfo: unreachable, minSize: 1, maxSize: 2),
       );
       await expectLater(
         pool.start(),

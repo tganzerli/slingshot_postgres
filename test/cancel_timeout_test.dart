@@ -181,7 +181,9 @@ void main() {
   group('QueryTimeoutException via PostgresQueryExecutor', () {
     test('execute() with timeout throws QueryTimeoutException', () async {
       final binding = _binding();
-      final pool = PostgresConnectionPool.withBinding(binding, const PoolConfig(connInfo: _connInfo, minSize: 1, maxSize: 1),
+      final pool = PostgresConnectionPool.withBinding(
+        binding,
+        const PoolConfig(connInfo: _connInfo, minSize: 1, maxSize: 1),
       );
       await pool.start();
 

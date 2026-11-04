@@ -25,29 +25,20 @@ Uint8List _enc(Param p) {
 void main() {
   group('decodeByOidBinary — primitives', () {
     test('bool 0x01 → true / 0x00 → false', () {
-      expect(
-          decodeByOidBinary(
-              Uint8List.fromList([0x01]), PostgresOid.boolean),
+      expect(decodeByOidBinary(Uint8List.fromList([0x01]), PostgresOid.boolean),
           true);
-      expect(
-          decodeByOidBinary(
-              Uint8List.fromList([0x00]), PostgresOid.boolean),
+      expect(decodeByOidBinary(Uint8List.fromList([0x00]), PostgresOid.boolean),
           false);
     });
 
     test('int2 / int4 / int8 BE round-trip from encoder', () {
       expect(decodeByOidBinary(_enc(Param.int2(-1)), PostgresOid.int2), -1);
-      expect(
-          decodeByOidBinary(_enc(Param.int2(0x7FFF)), PostgresOid.int2),
+      expect(decodeByOidBinary(_enc(Param.int2(0x7FFF)), PostgresOid.int2),
           0x7FFF);
-      expect(
-          decodeByOidBinary(_enc(Param.int4(42)), PostgresOid.int4), 42);
-      expect(
-          decodeByOidBinary(
-              _enc(Param.int4(-0x80000000)), PostgresOid.int4),
+      expect(decodeByOidBinary(_enc(Param.int4(42)), PostgresOid.int4), 42);
+      expect(decodeByOidBinary(_enc(Param.int4(-0x80000000)), PostgresOid.int4),
           -0x80000000);
-      expect(
-          decodeByOidBinary(_enc(Param.int8(1 << 33)), PostgresOid.int8),
+      expect(decodeByOidBinary(_enc(Param.int8(1 << 33)), PostgresOid.int8),
           1 << 33);
     });
 
@@ -55,8 +46,9 @@ void main() {
       final f4 = decodeByOidBinary(_enc(Param.float4(1.5)), PostgresOid.float4)
           as double;
       expect(f4, closeTo(1.5, 1e-6));
-      final f8 = decodeByOidBinary(_enc(Param.float8(2.71828)), PostgresOid.float8)
-          as double;
+      final f8 =
+          decodeByOidBinary(_enc(Param.float8(2.71828)), PostgresOid.float8)
+              as double;
       expect(f8, 2.71828);
     });
   });
@@ -139,24 +131,22 @@ void main() {
 
     test('the same payload as timestamptz stays UTC', () {
       final encoded = _enc(Param.timestamptz(DateTime.utc(2000, 1, 1)));
-      final v =
-          decodeByOidBinary(encoded, PostgresOid.timestamptz) as DateTime;
+      final v = decodeByOidBinary(encoded, PostgresOid.timestamptz) as DateTime;
       expect(v.isUtc, isTrue);
       expect(v, DateTime.utc(2000, 1, 1));
     });
 
     test('1 second past epoch (1_000_000 µs) decodes correctly', () {
-      final encoded = _enc(Param.timestamptz(DateTime.utc(2000, 1, 1, 0, 0, 1)));
-      final v =
-          decodeByOidBinary(encoded, PostgresOid.timestamptz) as DateTime;
+      final encoded =
+          _enc(Param.timestamptz(DateTime.utc(2000, 1, 1, 0, 0, 1)));
+      final v = decodeByOidBinary(encoded, PostgresOid.timestamptz) as DateTime;
       expect(v, DateTime.utc(2000, 1, 1, 0, 0, 1));
     });
 
     test('pre-epoch (negative µs) decodes correctly', () {
-      final encoded = _enc(
-          Param.timestamptz(DateTime.utc(1999, 12, 31, 23, 59, 59)));
-      final v =
-          decodeByOidBinary(encoded, PostgresOid.timestamptz) as DateTime;
+      final encoded =
+          _enc(Param.timestamptz(DateTime.utc(1999, 12, 31, 23, 59, 59)));
+      final v = decodeByOidBinary(encoded, PostgresOid.timestamptz) as DateTime;
       expect(v, DateTime.utc(1999, 12, 31, 23, 59, 59));
     });
 
@@ -165,8 +155,7 @@ void main() {
       final encoded = _enc(Param.timestamptz(original));
       final decoded =
           decodeByOidBinary(encoded, PostgresOid.timestamptz) as DateTime;
-      expect(decoded.microsecondsSinceEpoch,
-          original.microsecondsSinceEpoch);
+      expect(decoded.microsecondsSinceEpoch, original.microsecondsSinceEpoch);
     });
   });
 
@@ -174,8 +163,8 @@ void main() {
     // 2026-05-17T13:45:00Z == 8 modules of Postgres epoch micros; build the
     // binary payload the same way the server would.
     final micros = DateTime.utc(2026, 5, 17, 13, 45)
-            .difference(DateTime.utc(2000, 1, 1))
-            .inMicroseconds;
+        .difference(DateTime.utc(2000, 1, 1))
+        .inMicroseconds;
     final binary = Uint8List(8)
       ..buffer.asByteData().setInt64(0, micros, Endian.big);
 
@@ -183,8 +172,7 @@ void main() {
       final t = decodeByOid(
           Uint8List.fromList('2026-05-17 13:45:00+00'.codeUnits),
           PostgresOid.timestamptz) as DateTime;
-      final b =
-          decodeByOidBinary(binary, PostgresOid.timestamptz) as DateTime;
+      final b = decodeByOidBinary(binary, PostgresOid.timestamptz) as DateTime;
       expect(t.isUtc, isTrue, reason: 'text timestamptz');
       expect(b.isUtc, isTrue, reason: 'binary timestamptz');
       expect(b.microsecondsSinceEpoch, t.microsecondsSinceEpoch);
@@ -192,8 +180,7 @@ void main() {
 
     test('timestamp is naive in both text and binary', () {
       // Text has no offset suffix, so DateTime.parse yields isUtc: false.
-      final t = decodeByOid(
-          Uint8List.fromList('2026-05-17 13:45:00'.codeUnits),
+      final t = decodeByOid(Uint8List.fromList('2026-05-17 13:45:00'.codeUnits),
           PostgresOid.timestamp) as DateTime;
       final b = decodeByOidBinary(binary, PostgresOid.timestamp) as DateTime;
       expect(t.isUtc, isFalse, reason: 'text timestamp');
@@ -204,8 +191,7 @@ void main() {
     });
 
     test('the wall-clock reading of a timestamp agrees across formats', () {
-      final t = decodeByOid(
-          Uint8List.fromList('2026-05-17 13:45:00'.codeUnits),
+      final t = decodeByOid(Uint8List.fromList('2026-05-17 13:45:00'.codeUnits),
           PostgresOid.timestamp) as DateTime;
       final b = decodeByOidBinary(binary, PostgresOid.timestamp) as DateTime;
       expect([b.year, b.month, b.day, b.hour, b.minute],
@@ -236,39 +222,52 @@ void main() {
         decodeByOidBinary(b, PostgresOid.numeric) as PostgresNumeric;
 
     test('1234.56 — one group each side of the point', () {
-      expect(dec(num_(weight: 0, sign: 0x0000, dscale: 2, digits: [1234, 5600]))
-          .toString(), '1234.56');
+      expect(
+          dec(num_(weight: 0, sign: 0x0000, dscale: 2, digits: [1234, 5600]))
+              .toString(),
+          '1234.56');
     });
 
     test('groups after the first are zero-padded to four digits', () {
       // 1 * 10000 + 0002  → 10002, not 12.
-      expect(dec(num_(weight: 1, sign: 0x0000, dscale: 0, digits: [1, 2]))
-          .toString(), '10002');
+      expect(
+          dec(num_(weight: 1, sign: 0x0000, dscale: 0, digits: [1, 2]))
+              .toString(),
+          '10002');
     });
 
     test('trailing groups the payload omits are zeros', () {
       // 10000: one group, weight 1 — the units group is not transmitted.
-      expect(dec(num_(weight: 1, sign: 0x0000, dscale: 0, digits: [1]))
-          .toString(), '10000');
+      expect(
+          dec(num_(weight: 1, sign: 0x0000, dscale: 0, digits: [1])).toString(),
+          '10000');
     });
 
     test('negative weight puts the value entirely after the point', () {
-      expect(dec(num_(weight: -1, sign: 0x0000, dscale: 3, digits: [10]))
-          .toString(), '0.001');
+      expect(
+          dec(num_(weight: -1, sign: 0x0000, dscale: 3, digits: [10]))
+              .toString(),
+          '0.001');
       // weight -2 means a whole group of zeros before the first digit.
-      expect(dec(num_(weight: -2, sign: 0x0000, dscale: 8, digits: [1]))
-          .toString(), '0.00000001');
+      expect(
+          dec(num_(weight: -2, sign: 0x0000, dscale: 8, digits: [1]))
+              .toString(),
+          '0.00000001');
     });
 
     test('sign 0x4000 is negative', () {
-      expect(dec(num_(weight: -1, sign: 0x4000, dscale: 1, digits: [5000]))
-          .toString(), '-0.5');
+      expect(
+          dec(num_(weight: -1, sign: 0x4000, dscale: 1, digits: [5000]))
+              .toString(),
+          '-0.5');
     });
 
     test('dscale beyond the digits carried pads with zeros', () {
       // 1.5 declared as numeric(12,4) → 1.5000
-      expect(dec(num_(weight: 0, sign: 0x0000, dscale: 4, digits: [1, 5000]))
-          .toString(), '1.5000');
+      expect(
+          dec(num_(weight: 0, sign: 0x0000, dscale: 4, digits: [1, 5000]))
+              .toString(),
+          '1.5000');
     });
 
     test('zero carries its declared scale', () {
@@ -278,8 +277,8 @@ void main() {
 
     test('NaN and the infinities come through the sign field', () {
       expect(dec(num_(weight: 0, sign: 0xC000, dscale: 0)).isNaN, isTrue);
-      expect(dec(num_(weight: 0, sign: 0xD000, dscale: 0)).toString(),
-          'Infinity');
+      expect(
+          dec(num_(weight: 0, sign: 0xD000, dscale: 0)).toString(), 'Infinity');
       expect(dec(num_(weight: 0, sign: 0xF000, dscale: 0)).toString(),
           '-Infinity');
     });
@@ -325,8 +324,8 @@ void main() {
     test('the int32 is signed — dates before 2000 arrive negative', () {
       final d = decodeByOidBinary(days(-1), PostgresOid.date) as DateTime;
       expect([d.year, d.month, d.day], [1999, 12, 31]);
-      final old = decodeByOidBinary(days(-730119), PostgresOid.date)
-          as DateTime;
+      final old =
+          decodeByOidBinary(days(-730119), PostgresOid.date) as DateTime;
       expect([old.year, old.month, old.day], [1, 1, 1]);
     });
 
@@ -339,7 +338,7 @@ void main() {
     test('text and binary agree on the same day', () {
       final b = decodeByOidBinary(days(9633), PostgresOid.date) as DateTime;
       final t = decodeByOid(
-          Uint8List.fromList('2026-05-17'.codeUnits), PostgresOid.date)
+              Uint8List.fromList('2026-05-17'.codeUnits), PostgresOid.date)
           as DateTime;
       expect([b.year, b.month, b.day], [t.year, t.month, t.day]);
       expect(b.isUtc, t.isUtc);
@@ -347,8 +346,8 @@ void main() {
 
     test('round-trip through Param.date drops the time component', () {
       final withTime = DateTime(2026, 5, 17, 13, 45, 30);
-      final d = decodeByOidBinary(_enc(Param.date(withTime)),
-          PostgresOid.date) as DateTime;
+      final d = decodeByOidBinary(_enc(Param.date(withTime)), PostgresOid.date)
+          as DateTime;
       expect([d.year, d.month, d.day], [2026, 5, 17]);
       expect([d.hour, d.minute, d.second], [0, 0, 0]);
     });
@@ -373,8 +372,7 @@ void main() {
 
     test('no Microsoft GUID byte swapping on the first three groups', () {
       // If the first group were byte-swapped this would read '03020100'.
-      final decoded =
-          decodeByOidBinary(ascending, PostgresOid.uuid) as String;
+      final decoded = decodeByOidBinary(ascending, PostgresOid.uuid) as String;
       expect(decoded.substring(0, 8), '00010203');
       expect(decoded.substring(9, 13), '0405');
       expect(decoded.substring(14, 18), '0607');
@@ -416,15 +414,20 @@ void main() {
 
   group('decodeByOidBinary — text search', () {
     // Wire builders mirroring tsvectorsend / tsquerysend.
-    List<int> i32(int v) => [v >> 24 & 0xFF, v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF];
+    List<int> i32(int v) =>
+        [v >> 24 & 0xFF, v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF];
     List<int> u16(int v) => [v >> 8 & 0xFF, v & 0xFF];
     List<int> cstr(String s) => [...utf8.encode(s), 0];
     // WordEntryPos: weight 3=A 2=B 1=C 0=D in the 2 high bits.
     int wep(int pos, int weight) => weight << 14 | pos;
-    List<int> lexeme(String s, List<int> positions) =>
-        [...cstr(s), ...u16(positions.length), for (final p in positions) ...u16(p)];
+    List<int> lexeme(String s, List<int> positions) => [
+          ...cstr(s),
+          ...u16(positions.length),
+          for (final p in positions) ...u16(p)
+        ];
     String vec(List<List<int>> lexemes) => decodeByOidBinary(
-        Uint8List.fromList([...i32(lexemes.length), for (final l in lexemes) ...l]),
+        Uint8List.fromList(
+            [...i32(lexemes.length), for (final l in lexemes) ...l]),
         PostgresOid.tsvector) as String;
     List<int> val(String s, {int weight = 0, bool prefix = false}) =>
         [1, weight, prefix ? 1 : 0, ...cstr(s)];
@@ -442,9 +445,17 @@ void main() {
             lexeme('b', []),
           ]),
           "'a':1A,2B,3C,4 'b'");
-      expect(vec([lexeme("it's", []), lexeme(r'back\slash', [wep(7, 0)])]),
+      expect(
+          vec([
+            lexeme("it's", []),
+            lexeme(r'back\slash', [wep(7, 0)])
+          ]),
           r"'it''s' 'back\\slash':7");
-      expect(vec([lexeme('joão', [wep(1, 0)])]), "'joão':1");
+      expect(
+          vec([
+            lexeme('joão', [wep(1, 0)])
+          ]),
+          "'joão':1");
       expect(vec([]), '');
     });
 
@@ -490,8 +501,8 @@ void main() {
               Uint8List.fromList([...i32(1), 0x61]), PostgresOid.tsvector),
           throwsFormatException);
       expect(
-          () => decodeByOidBinary(
-              Uint8List.fromList([...i32(2), ...val('a')]), PostgresOid.tsquery),
+          () => decodeByOidBinary(Uint8List.fromList([...i32(2), ...val('a')]),
+              PostgresOid.tsquery),
           throwsA(anything));
       expect(
           () => decodeByOidBinary(
@@ -534,8 +545,8 @@ void main() {
     // the wire format. It now decodes, and the two formats converge.
     test('numeric zero decodes rather than returning raw bytes', () {
       // ndigits=0, weight=0, sign=POS, dscale=0 → the canonical zero.
-      final raw = Uint8List.fromList(
-          [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+      final raw =
+          Uint8List.fromList([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
       expect(decodeByOidBinary(raw, PostgresOid.numeric),
           PostgresNumeric.fromText('0'));
     });
@@ -558,15 +569,22 @@ void main() {
         (Param.text('hello'), PostgresOid.text, 'hello'),
         (Param.varchar('v'), PostgresOid.varchar, 'v'),
         (Param.bpchar('c'), PostgresOid.bpchar, 'c'),
-        (Param.bytea(Uint8List.fromList([1, 2, 3])), PostgresOid.bytea,
-            Uint8List.fromList([1, 2, 3])),
+        (
+          Param.bytea(Uint8List.fromList([1, 2, 3])),
+          PostgresOid.bytea,
+          Uint8List.fromList([1, 2, 3])
+        ),
         // Naive on the way out — see the note in the timestamp group.
-        (Param.timestamp(DateTime.utc(2026, 1, 2, 3, 4, 5)),
-            PostgresOid.timestamp,
-            DateTime(2026, 1, 2, 3, 4, 5)),
-        (Param.timestamptz(DateTime.utc(2026, 1, 2, 3, 4, 5)),
-            PostgresOid.timestamptz,
-            DateTime.utc(2026, 1, 2, 3, 4, 5)),
+        (
+          Param.timestamp(DateTime.utc(2026, 1, 2, 3, 4, 5)),
+          PostgresOid.timestamp,
+          DateTime(2026, 1, 2, 3, 4, 5)
+        ),
+        (
+          Param.timestamptz(DateTime.utc(2026, 1, 2, 3, 4, 5)),
+          PostgresOid.timestamptz,
+          DateTime.utc(2026, 1, 2, 3, 4, 5)
+        ),
       ];
       for (final (p, oid, expected) in cases) {
         final encoded = _enc(p);
@@ -581,8 +599,9 @@ void main() {
           _enc(Param.json('{"a":1,"b":[2,3]}')), PostgresOid.json) as Map;
       expect(j['a'], 1);
       expect(j['b'], [2, 3]);
-      final jb = decodeByOidBinary(
-          _enc(Param.jsonb('{"x":true}')), PostgresOid.jsonb) as Map;
+      final jb =
+          decodeByOidBinary(_enc(Param.jsonb('{"x":true}')), PostgresOid.jsonb)
+              as Map;
       expect(jb['x'], true);
     });
   });

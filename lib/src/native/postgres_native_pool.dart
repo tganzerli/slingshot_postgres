@@ -219,8 +219,7 @@ class NativeConn {
   ///
   /// `timeout`: wall-clock budget for the query. `Duration.zero` (the
   /// default) disables the timeout.
-  Future<int> submit(String sql,
-      {Duration timeout = Duration.zero}) async {
+  Future<int> submit(String sql, {Duration timeout = Duration.zero}) async {
     if (_released) {
       throw StateError('NativeConn: already released');
     }

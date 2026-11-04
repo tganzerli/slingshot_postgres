@@ -32,7 +32,9 @@ PostgresBinding _binding() {
 }
 
 Future<PostgresConnectionPool> _freshPool(PostgresBinding b) async {
-  final pool = PostgresConnectionPool.withBinding(b, const PoolConfig(connInfo: _connInfo, minSize: 1, maxSize: 2),
+  final pool = PostgresConnectionPool.withBinding(
+    b,
+    const PoolConfig(connInfo: _connInfo, minSize: 1, maxSize: 2),
   );
   await pool.start();
   return pool;

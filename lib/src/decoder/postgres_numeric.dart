@@ -90,8 +90,7 @@ final class PostgresNumeric {
 
   void _requireFinite(String member) {
     if (isFinite) return;
-    throw StateError(
-        '$member is undefined for a non-finite numeric ($_text); '
+    throw StateError('$member is undefined for a non-finite numeric ($_text); '
         'check isFinite first');
   }
 

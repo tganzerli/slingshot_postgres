@@ -75,7 +75,8 @@ Future<void> main() async {
       return (await ProdutoRepository(exec).findAll()).length;
     });
     assert(finalCount == 3, 'rollback failed: count=$finalCount');
-    print('[ok] count final = $finalCount (rollback descartou o insert do produto 4)');
+    print(
+        '[ok] count final = $finalCount (rollback descartou o insert do produto 4)');
   } finally {
     await pool.close();
   }

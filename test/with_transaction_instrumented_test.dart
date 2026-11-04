@@ -64,7 +64,8 @@ void main() {
         final events = <TxDiagnostics>[];
         void sink(TxDiagnostics d) => events.add(d);
 
-        final value = await withTransactionInstrumented<int>(pool, (exec) async {
+        final value =
+            await withTransactionInstrumented<int>(pool, (exec) async {
           final rs = await exec.execute('SELECT 7 AS n');
           try {
             return rs.row(0).getInt('n')!;

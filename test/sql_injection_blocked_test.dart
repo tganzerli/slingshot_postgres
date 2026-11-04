@@ -58,7 +58,8 @@ Future<void> _resetTable(PostgresQueryExecutorContract exec) async {
   );
 }
 
-Future<bool> _tableExists(PostgresQueryExecutorContract exec, String table) async {
+Future<bool> _tableExists(
+    PostgresQueryExecutorContract exec, String table) async {
   final rs = await exec.execute(
     "SELECT to_regclass(\$1) IS NOT NULL AS exists",
     params: [Param.text('public.$table')],
@@ -130,10 +131,8 @@ void main() {
         final check = PostgresUnitOfWork(pool);
         await check.begin();
         try {
-          expect(await _tableExists(check.executor, 'injection_target'),
-              isTrue,
-              reason:
-                  'attack must not have dropped the table — Param values '
+          expect(await _tableExists(check.executor, 'injection_target'), isTrue,
+              reason: 'attack must not have dropped the table — Param values '
                   'travel separately from SQL text in Extended Protocol');
           expect(await _rowCount(check.executor, 'injection_target'), 2,
               reason: 'no rows should have been added/removed by the attack');
@@ -201,7 +200,8 @@ void main() {
           final rs = await uow.executor.execute(
             'SELECT id FROM injection_target WHERE descricao = \$1',
             params: [
-              Param.text("alpha'; UPDATE injection_target SET descricao = 'pwned'; --"),
+              Param.text(
+                  "alpha'; UPDATE injection_target SET descricao = 'pwned'; --"),
             ],
           );
           try {

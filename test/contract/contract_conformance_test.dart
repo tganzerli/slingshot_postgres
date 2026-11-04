@@ -32,7 +32,6 @@ import 'package:slingshot_conformance/slingshot_conformance.dart';
 const _pgConnInfo =
     'host=localhost port=5432 dbname=teste user=postgres password=123';
 
-
 /// Compile-time conformance. Never called — the assignments below are the
 /// assertion, and the analyzer is the one that checks them.
 // ignore: unused_element

@@ -60,11 +60,11 @@ export 'src/pool/postgres_connection_pool.dart'
         PooledConnection,
         PostgresConnectionPool;
 
-export 'src/decoder/postgres_result_row.dart' show PostgresResultRow, PostgresResultSet;
+export 'src/decoder/postgres_result_row.dart'
+    show PostgresResultRow, PostgresResultSet;
 export 'src/decoder/postgres_numeric.dart' show PostgresNumeric;
 export 'src/decoder/postgres_type.dart' show PostgresType;
 export 'src/decoder/postgres_oids.dart' show PostgresOid;
-
 
 export 'package:slingshot/slingshot.dart'
     show
@@ -83,7 +83,8 @@ export 'src/postgres/with_transaction.dart'
 export 'src/postgres/with_postgres_connection.dart' show withPostgresConnection;
 export 'src/postgres/with_transaction_instrumented.dart'
     show withTransactionInstrumented;
-export 'src/pool/postgres_pool_diagnostics.dart' show TxDiagnostics, PoolDiagnosticsSink;
+export 'src/pool/postgres_pool_diagnostics.dart'
+    show TxDiagnostics, PoolDiagnosticsSink;
 
 // ── MySQL driver — moved out (2026-09-09). It now ships as its own
 //    package, `slingshot_mysql`, with its own libmysqlclient

@@ -31,11 +31,14 @@ void main() {
   }
 
   group('PostgresConnectionPool integration', () {
-    test('start opens maxSize eagerly, acquire/release round-trips, close cleans up',
+    test(
+        'start opens maxSize eagerly, acquire/release round-trips, close cleans up',
         () async {
       // ABI MAJOR 2: pool_create allocates all `maxSize` conns + workers
       // at start; `minSize` is informational only.
-      final pool = PostgresConnectionPool.withBinding(binding!, const PoolConfig(
+      final pool = PostgresConnectionPool.withBinding(
+        binding!,
+        const PoolConfig(
           connInfo: _connInfo,
           minSize: 2,
           maxSize: 5,
@@ -46,7 +49,8 @@ void main() {
       try {
         await pool.start();
       } on NativePoolStartupException {
-        markTestSkipped('Postgres not reachable — start PostgreSQL at localhost:5432');
+        markTestSkipped(
+            'Postgres not reachable — start PostgreSQL at localhost:5432');
         return;
       }
 
@@ -74,7 +78,9 @@ void main() {
     });
 
     test('grows up to maxSize under concurrent acquires', () async {
-      final pool = PostgresConnectionPool.withBinding(binding!, const PoolConfig(
+      final pool = PostgresConnectionPool.withBinding(
+        binding!,
+        const PoolConfig(
           connInfo: _connInfo,
           minSize: 1,
           maxSize: 5,
@@ -85,7 +91,8 @@ void main() {
       try {
         await pool.start();
       } on NativePoolStartupException {
-        markTestSkipped('Postgres not reachable — start PostgreSQL at localhost:5432');
+        markTestSkipped(
+            'Postgres not reachable — start PostgreSQL at localhost:5432');
         return;
       }
 
@@ -107,7 +114,9 @@ void main() {
     });
 
     test('acquire timeout fires when pool is exhausted', () async {
-      final pool = PostgresConnectionPool.withBinding(binding!, const PoolConfig(
+      final pool = PostgresConnectionPool.withBinding(
+        binding!,
+        const PoolConfig(
           connInfo: _connInfo,
           minSize: 0,
           maxSize: 1,
@@ -118,7 +127,8 @@ void main() {
       try {
         await pool.start();
       } on NativePoolStartupException {
-        markTestSkipped('Postgres not reachable — start PostgreSQL at localhost:5432');
+        markTestSkipped(
+            'Postgres not reachable — start PostgreSQL at localhost:5432');
         return;
       }
 
@@ -134,7 +144,9 @@ void main() {
     });
 
     test('waiter is unblocked when a connection is released', () async {
-      final pool = PostgresConnectionPool.withBinding(binding!, const PoolConfig(
+      final pool = PostgresConnectionPool.withBinding(
+        binding!,
+        const PoolConfig(
           connInfo: _connInfo,
           minSize: 0,
           maxSize: 1,
@@ -145,7 +157,8 @@ void main() {
       try {
         await pool.start();
       } on NativePoolStartupException {
-        markTestSkipped('Postgres not reachable — start PostgreSQL at localhost:5432');
+        markTestSkipped(
+            'Postgres not reachable — start PostgreSQL at localhost:5432');
         return;
       }
 

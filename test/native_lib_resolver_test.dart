@@ -16,8 +16,7 @@ import 'package:test/test.dart';
 
 void main() {
   group('loadNativeDb resolver', () {
-    test('throws StateError with helpful message when nothing matches',
-        () {
+    test('throws StateError with helpful message when nothing matches', () {
       // Override to a known-nonexistent path so we exercise the
       // failure path. Note that overridePath bypasses the candidate
       // list, so we get a plain `open` failure (FileSystemException
@@ -46,26 +45,23 @@ void main() {
       // `native/c/build` paths are the monolith's layout, kept for anyone who still
       // builds from there.
       final candidates = <String>[
-        if (Platform.isMacOS)
-          ...[
-            'libnative_db.dylib',
-            'native/build/libnative_db.dylib',
-            '../native/build/libnative_db.dylib',
-            '../native/c/build/libnative_db.dylib',
-          ],
-        if (Platform.isLinux)
-          ...[
-            'libnative_db.so',
-            'native/build/libnative_db.so',
-            '../native/build/libnative_db.so',
-            '../native/c/build/libnative_db.so',
-          ],
-        if (Platform.isWindows)
-          ...[
-            'native_db.dll',
-            'native\\build\\native_db.dll',
-            '..\\native\\c\\build\\native_db.dll',
-          ],
+        if (Platform.isMacOS) ...[
+          'libnative_db.dylib',
+          'native/build/libnative_db.dylib',
+          '../native/build/libnative_db.dylib',
+          '../native/c/build/libnative_db.dylib',
+        ],
+        if (Platform.isLinux) ...[
+          'libnative_db.so',
+          'native/build/libnative_db.so',
+          '../native/build/libnative_db.so',
+          '../native/c/build/libnative_db.so',
+        ],
+        if (Platform.isWindows) ...[
+          'native_db.dll',
+          'native\\build\\native_db.dll',
+          '..\\native\\c\\build\\native_db.dll',
+        ],
       ];
       String? located;
       for (final c in candidates) {

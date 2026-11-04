@@ -70,8 +70,7 @@ const List<String> _devPaths = [
   '../native/c/build-macos',
 ];
 
-const String _buildHint =
-    'cmake -S packages/slingshot_postgres/native '
+const String _buildHint = 'cmake -S packages/slingshot_postgres/native '
     '-B packages/slingshot_postgres/native/build && '
     'cmake --build packages/slingshot_postgres/native/build';
 
