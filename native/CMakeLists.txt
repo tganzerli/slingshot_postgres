@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(native_db
-    VERSION 0.1.1
+    VERSION 0.1.2
     DESCRIPTION "C wrapper over libpq with Dart Native Ports for async I/O"
     LANGUAGES C
 )
@@ -64,6 +64,36 @@ target_compile_options(native_db PRIVATE
 target_compile_definitions(native_db PRIVATE
     _POSIX_C_SOURCE=200809L
 )
+
+# Export only the public ABI listed in exports.txt; everything else, including
+# the vendored Dart_*_DL copy and the pool internals, stays local to this
+# library. On Linux the version script also binds internal calls inside the
+# library, so a same-named symbol elsewhere in the process cannot win.
+# The linker files are written at configure time, so editing exports.txt
+# must re-run the configure step, not just the link.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/exports.txt)
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/exports.txt _exports REGEX "^[A-Za-z_]")
+if(APPLE)
+    list(TRANSFORM _exports PREPEND "_" OUTPUT_VARIABLE _darwin_exports)
+    list(JOIN _darwin_exports "\n" _body)
+    set(_export_file ${CMAKE_CURRENT_BINARY_DIR}/exports.darwin)
+    file(WRITE ${_export_file} "${_body}\n")
+    target_link_options(native_db PRIVATE
+        "LINKER:-exported_symbols_list,${_export_file}"
+    )
+elseif(UNIX)
+    list(JOIN _exports ";\n    " _body)
+    set(_export_file ${CMAKE_CURRENT_BINARY_DIR}/exports.map)
+    file(WRITE ${_export_file}
+        "{\n  global:\n    ${_body};\n  local: *;\n};\n")
+    target_link_options(native_db PRIVATE
+        "LINKER:--version-script=${_export_file}"
+    )
+endif()
+if(DEFINED _export_file)
+    set_target_properties(native_db PROPERTIES LINK_DEPENDS ${_export_file})
+endif()
 
 # Produces:
 #   - libnative_db.dylib (macOS)

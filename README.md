@@ -191,6 +191,19 @@ ENTRYPOINT ["/app/server"]
 The `grep` finds the package by name in `.dart_tool/package_config.json`. A copy of this recipe made before the
 rename looks for `dart_db_connector_postgres`; change the name there when migrating.
 
+**With `dart build cli` (no manual copy).** Add the opt-in companion `slingshot_postgres_assets`, whose build hook
+registers the pre-built library as a code asset. `dart build cli` then places it in `bundle/lib/`, where the resolver
+finds it without the copy step or the environment variable:
+
+```bash
+dart pub add slingshot_postgres_assets
+dart build cli -o out          # out/bundle/bin/<app>, out/bundle/lib/libnative_db.*
+```
+
+Ship the whole `out/bundle/` directory. The companion is separate on purpose: any package with a build hook makes
+`dart compile exe` refuse to build the app ("'dart compile' does not support build hooks"), so apps compiled that way
+keep using the recipe above.
+
 ## Local PostgreSQL with TLS
 
 The connector speaks standard PostgreSQL TLS, so any server with `ssl=on` works. To develop and test with

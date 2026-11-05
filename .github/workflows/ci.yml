@@ -39,6 +39,7 @@ jobs:
           cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
           cmake --build native/build --parallel
       - run: dart pub get
+      - run: dart format --output=none --set-exit-if-changed .
       - run: dart analyze --fatal-infos
       - name: Load and ABI check
         run: DART_DB_CONNECTOR_NATIVE_LIB_PATH=$PWD/native/build/libnative_db.so dart run tool/check_native.dart

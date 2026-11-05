@@ -4,6 +4,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.9
+
+### Fixed
+
+- The native library exports only its public ABI (the functions of `native_db.h` and `native_pool.h`), 27
+  symbols instead of 78. Its own copy of the Dart API DL and the pool internals stay local, so on Linux a
+  same-named symbol from another library in the process can no longer take over an internal call.
+
+### Added
+
+- README: shipping with `dart build cli` through the opt-in `slingshot_postgres_assets` companion, which needs
+  `slingshot` 1.0.5 or later.
+
+No API or ABI version change (still `MAJOR 2 / MINOR 6`). The native library in `lib/_native/` is rebuilt for all
+four platforms.
+
 ## 0.1.8
 
 ### Fixed

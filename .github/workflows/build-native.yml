@@ -6,6 +6,11 @@ name: build-native
 # resolver looks. The collected artifact is committed to the repository before
 # a version is tagged.
 #
+# The same four files also go to `slingshot_postgres_assets/native/<platform>/`
+# when the opt-in build-hook companion is released: its hook registers them as
+# code assets, so `dart build cli` bundles the library (bundle/lib/). The
+# layout per platform is identical; only the destination directory differs.
+#
 # Windows is absent by design: the native pool is built on POSIX threads.
 #
 # The library links DYNAMICALLY against libpq, so consumers install libpq where

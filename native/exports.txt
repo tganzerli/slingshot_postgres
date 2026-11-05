@@ -1,0 +1,32 @@
+# Public ABI of this library: the functions declared in include/native_db.h, include/native_pool.h.
+# The linker exports only these names (see CMakeLists.txt); everything else,
+# including the vendored Dart_*_DL copy, stays local. Adding a function to a
+# public header means adding it here too, or the binding's lookup fails at
+# load time; test/native_exports_test.dart checks this list against the build.
+InitDartApiDL
+clear_result
+close_db
+connect_db
+get_col_count
+get_error_message
+get_field_name
+get_field_type
+get_raw_length
+get_raw_value
+get_result_status
+get_row_count
+native_db_abi_version
+poll_result
+pool_acquire
+pool_cancel
+pool_conn_transaction_status
+pool_create
+pool_create_with_error
+pool_destroy
+pool_release
+pool_submit_multi_read
+pool_submit_pipeline
+pool_submit_query
+pool_submit_query_params
+pool_submit_query_params_prefixed
+pool_submit_query_params_prefixed_n
