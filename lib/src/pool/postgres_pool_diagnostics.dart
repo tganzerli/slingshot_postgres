@@ -7,6 +7,8 @@
 /// `latency_us` column of the benchmark results.
 library;
 
+import 'dart:async';
+
 import 'package:meta/meta.dart';
 
 @experimental
@@ -56,7 +58,24 @@ class TxDiagnostics {
 /// sink runs on the transaction's hot path. Buffer to a `StreamController`
 /// or stats counter rather than doing I/O inline.
 ///
+/// The sink cannot change the transaction's outcome: an exception thrown by
+/// it goes to the current [Zone] (`Zone.handleUncaughtError`), never to the
+/// caller, who still gets the body's value or the original error. In the
+/// root zone that terminates the isolate, as any uncaught error does; run
+/// under `runZonedGuarded` to observe it instead.
+///
 /// **Experimental:** the function signature may gain a context
 /// parameter (e.g. transaction ID) before 1.0.
 @experimental
 typedef PoolDiagnosticsSink = void Function(TxDiagnostics diag);
+
+/// Calls [sink] without letting it change the transaction's outcome: an
+/// exception from the sink goes to the current zone, never to the caller.
+@internal
+void emitTxDiagnostics(PoolDiagnosticsSink sink, TxDiagnostics diag) {
+  try {
+    sink(diag);
+  } catch (e, st) {
+    Zone.current.handleUncaughtError(e, st);
+  }
+}

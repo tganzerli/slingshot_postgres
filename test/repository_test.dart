@@ -68,6 +68,38 @@ class _FakeExecutor implements PostgresQueryExecutorContract {
   }
 }
 
+/// Wraps an executor (or answers with empty result sets when [inner] is
+/// null) and keeps every result set it hands out, so a test can check that
+/// the caller released them.
+class _CapturingExecutor implements PostgresQueryExecutorContract {
+  _CapturingExecutor([this.inner]);
+  final PostgresQueryExecutorContract? inner;
+  final List<PostgresResultSet> results = [];
+
+  @override
+  Future<PostgresResultSet> execute(
+    String sql, {
+    List<Param> params = const [],
+    bool binaryResult = false,
+  }) async {
+    final rs = inner == null
+        ? PostgresResultSet.empty()
+        : await inner!.execute(sql, params: params, binaryResult: binaryResult);
+    results.add(rs);
+    return rs;
+  }
+}
+
+/// `rows` throws [StateError] once the set is released, also on an empty set.
+final Matcher _isReleased = predicate<PostgresResultSet>((rs) {
+  try {
+    rs.rows;
+    return false;
+  } on StateError {
+    return true;
+  }
+}, 'a released result set');
+
 /// Repository that opts in to the parameter path (Extended Query Protocol) for
 /// `findById` only — leaves the other CRUDs on the string path. Used
 /// to exercise the per-method opt-in pattern.
@@ -103,6 +135,18 @@ class _MixedTierRepository extends PostgresRepository<_Mix, int> {
 
 void main() {
   group('PostgresRepository (no Postgres)', () {
+    test('every operation releases its result set', () async {
+      final cap = _CapturingExecutor();
+      final repo = ProdutoRepository(cap);
+      await repo.findAll();
+      await repo.findById(1);
+      await repo.insert(const Produto(1, '111', 'X', 1.0));
+      await repo.update(const Produto(1, '111', 'X', 2.0));
+      await repo.delete(1);
+      expect(cap.results, hasLength(5));
+      expect(cap.results, everyElement(_isReleased));
+    });
+
     test('insert/update/delete delegate to executor', () async {
       final fake = _FakeExecutor();
       final repo = ProdutoRepository(fake);
@@ -286,4 +330,71 @@ void main() {
       }
     });
   });
+
+  group('PostgresRepository release (requires Docker Postgres)', () {
+    test('rows are decoded before release; a throwing mapper still releases',
+        () async {
+      final binding = _binding();
+      final pool = await _freshPool(binding).catchError((Object e) {
+        markTestSkipped('Postgres not reachable: $e');
+        throw e;
+      });
+      try {
+        await withPostgresConnection(pool, (exec) async {
+          await _resetTable(exec);
+          final cap = _CapturingExecutor(exec);
+          final repo = ProdutoRepository(cap);
+          await repo.insert(const Produto(1, '111', 'A', 10.0));
+          await repo.insert(const Produto(2, '222', 'B', 20.0));
+
+          final all = await repo.findAll();
+          expect(all.map((p) => (p.id, p.descricao)), [(1, 'A'), (2, 'B')]);
+          final one = await repo.findById(2);
+          expect(one?.precoUnitario, 20.0);
+          expect(await repo.findById(99), isNull);
+          expect(cap.results, hasLength(5));
+          expect(cap.results, everyElement(_isReleased));
+
+          final failing = _ThrowingProdutoRepository(cap);
+          cap.results.clear();
+          await expectLater(failing.findAll(), throwsA(isA<_MapperError>()));
+          await expectLater(failing.findById(1), throwsA(isA<_MapperError>()));
+          expect(cap.results, hasLength(2));
+          expect(cap.results, everyElement(_isReleased));
+        });
+      } finally {
+        await pool.close();
+      }
+    });
+  });
+}
+
+class _MapperError implements Exception {}
+
+/// Same SQL as [ProdutoRepository], with a row mapper that always throws.
+class _ThrowingProdutoRepository extends PostgresRepository<Produto, int> {
+  _ThrowingProdutoRepository(PostgresQueryExecutorContract exec)
+      : super(exec, (_) => throw _MapperError());
+  final ProdutoRepository _sql = ProdutoRepository(_NoExecutor());
+  @override
+  String get tableName => _sql.tableName;
+  @override
+  String get idColumn => _sql.idColumn;
+  @override
+  String selectAllSql() => _sql.selectAllSql();
+  @override
+  String selectByIdSql(int id) => _sql.selectByIdSql(id);
+  @override
+  String insertSql(Produto entity) => _sql.insertSql(entity);
+  @override
+  String updateSql(Produto entity) => _sql.updateSql(entity);
+  @override
+  String deleteSql(int id) => _sql.deleteSql(id);
+}
+
+class _NoExecutor implements PostgresQueryExecutorContract {
+  @override
+  Future<PostgresResultSet> execute(String sql,
+          {List<Param> params = const [], bool binaryResult = false}) =>
+      throw UnsupportedError('SQL source only');
 }

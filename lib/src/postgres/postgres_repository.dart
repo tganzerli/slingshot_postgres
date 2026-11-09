@@ -34,6 +34,10 @@ import 'postgres_query_executor.dart';
 
 /// Base class for Postgres-backed [Repository]s.
 ///
+/// The row mapper passed to the constructor must decode the values it
+/// needs: each operation releases its result set before returning, so a
+/// [PostgresResultRow] kept for later throws [StateError] when read.
+///
 /// Concrete subclasses override the string methods. They MAY
 /// override the matching `*SqlParams` method to opt into Extended
 /// Query Protocol per-operation (mix and match — e.g. `findById`
@@ -135,31 +139,43 @@ abstract class PostgresRepository<T, K> implements Repository<T, K> {
     return _exec.execute(fallback());
   }
 
+  // Every operation releases its result set before returning (also when
+  // the row mapper throws), so the native `PGresult` is freed now instead
+  // of whenever the finalizer runs.
+
   @override
   Future<List<T>> findAll() async {
     final rs = await _run(selectAllSqlParams(), selectAllSql);
-    return [for (final row in rs.rows) _fromRow(row)];
+    try {
+      return [for (final row in rs.rows) _fromRow(row)];
+    } finally {
+      rs.release();
+    }
   }
 
   @override
   Future<T?> findById(K id) async {
     final rs = await _run(selectByIdSqlParams(id), () => selectByIdSql(id));
-    if (rs.rowCount == 0) return null;
-    return _fromRow(rs.row(0));
+    try {
+      if (rs.rowCount == 0) return null;
+      return _fromRow(rs.row(0));
+    } finally {
+      rs.release();
+    }
   }
 
   @override
   Future<void> insert(T entity) async {
-    await _run(insertSqlParams(entity), () => insertSql(entity));
+    (await _run(insertSqlParams(entity), () => insertSql(entity))).release();
   }
 
   @override
   Future<void> update(T entity) async {
-    await _run(updateSqlParams(entity), () => updateSql(entity));
+    (await _run(updateSqlParams(entity), () => updateSql(entity))).release();
   }
 
   @override
   Future<void> delete(K id) async {
-    await _run(deleteSqlParams(id), () => deleteSql(id));
+    (await _run(deleteSqlParams(id), () => deleteSql(id))).release();
   }
 }

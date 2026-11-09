@@ -11,6 +11,8 @@
 /// hot path.
 library;
 
+import 'dart:async';
+
 import 'package:meta/meta.dart';
 
 /// Timing decomposition of a single `execute()` call, in microseconds.
@@ -67,7 +69,24 @@ class QueryPhases {
 /// query hot path. Buffer to a `List`/counter rather than doing I/O
 /// inline.
 ///
+/// The sink is called only for a query that succeeded, after its result is
+/// ready, and it cannot change what `execute` returns: an exception thrown by
+/// the sink goes to the current [Zone] (`Zone.handleUncaughtError`), never to
+/// the caller. In the root zone that terminates the isolate, as any uncaught
+/// error does; run under `runZonedGuarded` to observe it instead.
+///
 /// **Experimental:** the signature may gain a context parameter (e.g. the
 /// SQL text or a query id) before 1.0.
 @experimental
 typedef QueryPhaseSink = void Function(QueryPhases phases);
+
+/// Calls [sink] without letting it change the query's outcome: an exception
+/// from the sink goes to the current zone, never to the caller.
+@internal
+void emitQueryPhases(QueryPhaseSink sink, QueryPhases phases) {
+  try {
+    sink(phases);
+  } catch (e, st) {
+    Zone.current.handleUncaughtError(e, st);
+  }
+}

@@ -370,13 +370,15 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
     // `sw` keeps running through _drainResults → elapsed == decode phase.
     final rs = _drainResults(sql, binary: false);
     if (sink != null) {
-      sink(QueryPhases(
-        submitUs: submitUs,
-        waitUs: waitUs,
-        decodeUs: sw!.elapsedMicroseconds,
-        rowCount: rs.rowCount,
-        colCount: rs.colCount,
-      ));
+      emitQueryPhases(
+          sink,
+          QueryPhases(
+            submitUs: submitUs,
+            waitUs: waitUs,
+            decodeUs: sw!.elapsedMicroseconds,
+            rowCount: rs.rowCount,
+            colCount: rs.colCount,
+          ));
     }
     return rs;
   }
@@ -502,13 +504,15 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
     }
     final rs = _drainResults(sql, binary: binaryResult);
     if (sink != null) {
-      sink(QueryPhases(
-        submitUs: submitUs,
-        waitUs: waitUs,
-        decodeUs: sw!.elapsedMicroseconds,
-        rowCount: rs.rowCount,
-        colCount: rs.colCount,
-      ));
+      emitQueryPhases(
+          sink,
+          QueryPhases(
+            submitUs: submitUs,
+            waitUs: waitUs,
+            decodeUs: sw!.elapsedMicroseconds,
+            rowCount: rs.rowCount,
+            colCount: rs.colCount,
+          ));
     }
     return rs;
   }

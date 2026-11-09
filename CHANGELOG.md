@@ -4,6 +4,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.10
+
+### Fixed
+
+- `PostgresRepository` releases the result set of every operation (`findAll`, `findById`, `insert`, `update`,
+  `delete`) before returning, also when the row mapper throws. Before, each `PGresult` stayed allocated until the
+  finalizer ran, which the GC schedules without seeing native memory. The row mapper must decode the values it
+  needs: a `PostgresResultRow` kept for later now throws `StateError` when read.
+- A `QueryPhaseSink` or `PoolDiagnosticsSink` that throws no longer replaces the outcome it observes. Before, a
+  throwing query sink discarded the ready result set and handed its own exception to the caller, and a throwing
+  transaction sink hid the `BEGIN` or body error, or made a committed `withTransactionInstrumented` look failed.
+  The sink's exception now goes to the current zone (`Zone.handleUncaughtError`); the caller gets the result or
+  the original error. No API or ABI version change.
+
 ## 0.1.9
 
 ### Fixed

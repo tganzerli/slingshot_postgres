@@ -9,6 +9,7 @@
 /// observe them.
 library;
 
+import 'dart:async';
 import 'dart:ffi' as ffi;
 
 import 'package:slingshot_postgres/slingshot_postgres.dart';
@@ -124,6 +125,52 @@ void main() {
       } finally {
         await leased.release();
       }
+    });
+
+    test('a throwing sink changes neither path; its error goes to the zone',
+        () async {
+      final leased = await pool.acquire();
+      // Run inside a guarded zone and assert OUTSIDE it: a TestFailure thrown
+      // inside would itself be routed to the zone handler and get lost.
+      final done = Completer<void>();
+      final zoneErrors = <Object>[];
+      var sinkCalls = 0;
+      int? simpleValue;
+      int? extendedValue;
+      Object? unexpected;
+      runZonedGuarded(() async {
+        try {
+          final exec = PostgresQueryExecutor(b, leased.raw, phaseSink: (_) {
+            sinkCalls++;
+            throw StateError('sink boom $sinkCalls');
+          });
+          final rs1 = await exec.execute('SELECT 41 AS v');
+          simpleValue = rs1.row(0).getInt('v');
+          rs1.release();
+          final rs2 = await exec.execute(
+            'SELECT \$1::int AS v',
+            params: [Param.int4(43)],
+          );
+          extendedValue = rs2.row(0).getInt('v');
+          rs2.release();
+        } catch (e) {
+          unexpected = e;
+        } finally {
+          if (!done.isCompleted) done.complete();
+        }
+      }, (e, _) => zoneErrors.add(e));
+      try {
+        await done.future;
+      } finally {
+        await leased.release();
+      }
+
+      expect(unexpected, isNull, reason: 'the sink error reached the caller');
+      expect(simpleValue, 41);
+      expect(extendedValue, 43);
+      expect(sinkCalls, 2);
+      expect(zoneErrors, hasLength(2));
+      expect(zoneErrors.every((e) => e is StateError), isTrue);
     });
 
     test('null sink (default): no emission, unchanged result', () async {

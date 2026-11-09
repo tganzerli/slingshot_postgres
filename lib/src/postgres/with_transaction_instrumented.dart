@@ -51,15 +51,17 @@ Future<T> withTransactionInstrumented<T>(
     beginSw.stop();
     total.stop();
     await leased.release();
-    sink(TxDiagnostics(
-      acquireWaitUs: acquireWaitUs,
-      queueDepthAtAcquire: queueDepth,
-      beginUs: beginSw.elapsedMicroseconds,
-      workUs: 0,
-      commitUs: 0,
-      totalUs: total.elapsedMicroseconds,
-      committed: false,
-    ));
+    emitTxDiagnostics(
+        sink,
+        TxDiagnostics(
+          acquireWaitUs: acquireWaitUs,
+          queueDepthAtAcquire: queueDepth,
+          beginUs: beginSw.elapsedMicroseconds,
+          workUs: 0,
+          commitUs: 0,
+          totalUs: total.elapsedMicroseconds,
+          committed: false,
+        ));
     rethrow;
   }
   beginSw.stop();
@@ -94,15 +96,17 @@ Future<T> withTransactionInstrumented<T>(
 
   await leased.release();
 
-  sink(TxDiagnostics(
-    acquireWaitUs: acquireWaitUs,
-    queueDepthAtAcquire: queueDepth,
-    beginUs: beginSw.elapsedMicroseconds,
-    workUs: workSw.elapsedMicroseconds,
-    commitUs: commitSw.elapsedMicroseconds,
-    totalUs: total.elapsedMicroseconds,
-    committed: committed,
-  ));
+  emitTxDiagnostics(
+      sink,
+      TxDiagnostics(
+        acquireWaitUs: acquireWaitUs,
+        queueDepthAtAcquire: queueDepth,
+        beginUs: beginSw.elapsedMicroseconds,
+        workUs: workSw.elapsedMicroseconds,
+        commitUs: commitSw.elapsedMicroseconds,
+        totalUs: total.elapsedMicroseconds,
+        committed: committed,
+      ));
 
   if (thrown != null) {
     // ignore: only_throw_errors
