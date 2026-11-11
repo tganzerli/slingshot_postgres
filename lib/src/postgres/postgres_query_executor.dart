@@ -83,8 +83,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
     if (portCode == WorkerPortCode.ok) return;
 
     if (portCode == WorkerPortCode.connLost) {
-      _connectionLost = true;
-      throw ConnectionLostException(sql: sql);
+      throw _lost = ConnectionLostException(sql: sql);
     }
 
     if (portCode == WorkerPortCode.aborted) {
@@ -107,8 +106,23 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// Set once a [ConnectionLostException] has been raised on this
   /// executor. Read by [PostgresUnitOfWork] so a poisoned transaction
   /// stops trying to speak to a socket that is gone.
-  bool get connectionLost => _connectionLost;
-  bool _connectionLost = false;
+  ///
+  /// Also terminal for the executor itself: every later dispatch raises
+  /// [ConnectionLostException] without reaching the worker. The worker
+  /// reconnects the slot while classifying the failure and the slot stays
+  /// leased, so without this a later statement would run on the fresh
+  /// session in autocommit, outside the transaction it was written for,
+  /// and be committed at once. The reconnected slot serves the next lease,
+  /// through a new executor. The refusal rethrows the original exception,
+  /// so its message names the statement that was actually lost, not the
+  /// one refused.
+  bool get connectionLost => _lost != null;
+  ConnectionLostException? _lost;
+
+  void _refuseIfLost() {
+    final lost = _lost;
+    if (lost != null) throw lost;
+  }
 
   /// Optional per-query phase sink. When null (the default and only
   /// production path), no `Stopwatch` is allocated and the hot path pays
@@ -194,6 +208,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
     List<Param> params = const [],
     bool binaryResult = false,
   }) async {
+    _refuseIfLost();
     final reset = _takeReset();
     // Fast path: zero params + text result → Simple Query Protocol
     // (no marshalling, no PQexecParams overhead). Identical to the
@@ -616,6 +631,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// input — values travel as SQL text. For untrusted values use
   /// [execute] with `params` (Extended Query Protocol), one per call.
   Future<List<PostgresResultSet>> executeMultiRead(List<String> reads) async {
+    _refuseIfLost();
     final reset = _takeReset();
     if (reads.isEmpty) {
       if (reset) await _standaloneReset();
@@ -727,6 +743,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   ///
   /// Added in ABI MAJOR 1 MINOR 1.
   Future<void> executePipeline(List<String> queries) async {
+    _refuseIfLost();
     // A deferred BEGIN is sent standalone here rather than fused as the
     // pipeline's first query. Fusing it is a valid optimization now that
     // the pipeline primitive only rolls back an *aborted* (INERROR)

@@ -165,10 +165,11 @@ void main() {
         () async {
       final conn = pool.acquire(timeout: const Duration(seconds: 5));
 
-      // The full measured sequence, asserted step by step. The timing
-      // is the interesting part and it is NOT what one would guess:
-      // `pg_terminate_backend(pg_backend_pid())` returns its row
-      // normally, and the link only shows up dead on the NEXT exchange.
+      // The full measured sequence, asserted step by step. The head of
+      // `pg_terminate_backend(pg_backend_pid())` is the server's own
+      // FATAL: the statement did not run, so the worker reports the
+      // loss on the kill itself (2026-11-11; until then it posted OK and
+      // the loss showed up on the NEXT exchange).
       expect(await _submitRaw(binding!, conn.ptr, 'SELECT 1::int4'),
           WorkerPortCode.ok);
       expect(_drainInt(binding, conn.ptr), 1);
@@ -177,15 +178,9 @@ void main() {
       expect(
         await _submitRaw(
             binding, conn.ptr, 'SELECT pg_terminate_backend(pg_backend_pid())'),
-        WorkerPortCode.ok,
-        reason: 'the kill statement itself still answers',
-      );
-      _drainAll(binding, conn.ptr);
-
-      expect(
-        await _submitRaw(binding, conn.ptr, 'SELECT 2::int4'),
         WorkerPortCode.connLost,
-        reason: 'a dead link must not be reported as a timeout (code 2)',
+        reason: 'a dead link must not be reported as a timeout (code 2) '
+            'nor as an ordinary query error (code 1)',
       );
       _drainAll(binding, conn.ptr);
 
@@ -201,13 +196,43 @@ void main() {
       conn.release();
     }, timeout: const Timeout(Duration(seconds: 30)));
 
+    test('a statement that completed before the link died keeps its OK',
+        () async {
+      final conn = pool.acquire(timeout: const Duration(seconds: 5));
+
+      // The head (SELECT 1) completed before the kill, so the worker
+      // keeps the 2026-11-04 contract: OK with the head, the kill's
+      // FATAL as the trailing error, and the dead link reported on the
+      // next exchange. Reporting the loss here would invite a retry of
+      // work the server may have done.
+      expect(
+        await _submitRaw(binding!, conn.ptr,
+            'SELECT 1::int4; SELECT pg_terminate_backend(pg_backend_pid())'),
+        WorkerPortCode.ok,
+      );
+      expect(_drainInt(binding, conn.ptr), 1);
+      _drainAll(binding, conn.ptr);
+
+      expect(
+        await _submitRaw(binding, conn.ptr, 'SELECT 2::int4'),
+        WorkerPortCode.connLost,
+      );
+      _drainAll(binding, conn.ptr);
+
+      expect(await _submitRaw(binding, conn.ptr, 'SELECT 3::int4'),
+          WorkerPortCode.ok);
+      expect(_drainInt(binding, conn.ptr), 3);
+
+      conn.release();
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
     test('the slot recovers by itself, so the pool survives a blink', () async {
       final conn = pool.acquire(timeout: const Duration(seconds: 5));
+      // The kill itself surfaces the loss, so the worker classifies and
+      // reconnects.
       await _submitRaw(
           binding!, conn.ptr, 'SELECT pg_terminate_backend(pg_backend_pid())');
       _drainAll(binding, conn.ptr);
-      // Surface the loss, so the worker classifies and reconnects.
-      await _submitRaw(binding, conn.ptr, 'SELECT 2::int4');
       conn.release();
 
       // The pool has exactly one slot, so this MUST be the same one. If

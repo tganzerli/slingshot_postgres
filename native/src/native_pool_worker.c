@@ -190,6 +190,7 @@ static int64_t drain_into_chain(native_conn_t* conn,
                                 const struct timespec* deadline,
                                 int head_and_first_error) {
     int have_head = 0;
+    int head_is_error = 0;
     int have_error = 0;
     int link_lost = 0;
     while (1) {
@@ -223,6 +224,21 @@ static int64_t drain_into_chain(native_conn_t* conn,
                 continue;
             }
             if (PQconsumeInput(pg) == 0) {
+                if (head_and_first_error && have_head && head_is_error &&
+                    PQstatus(pg) == CONNECTION_BAD) {
+                    // The link died and the head is the server's own
+                    // error (e.g. the FATAL that `pg_terminate_backend`
+                    // sends the session it ends): the statement did not
+                    // run, so nothing would be repeated. Report the loss
+                    // now and reconnect, as the COPY branch below does;
+                    // posting OK would hand the caller an ordinary
+                    // query error over a dead link, with the slot still
+                    // marked healthy.
+                    native_pool_free_result_chain(conn);
+                    atomic_store(&conn->health, CONN_HEALTH_LOST);
+                    native_pool_worker_reset(conn);
+                    return WORKER_PORT_CONN_LOST;
+                }
                 if (head_and_first_error && have_head &&
                     PQstatus(pg) == CONNECTION_BAD) {
                     // The link died after the head was complete (e.g.
@@ -278,7 +294,11 @@ static int64_t drain_into_chain(native_conn_t* conn,
                 PQclear(r);
                 continue;
             }
-            if (have_head) have_error = 1;
+            if (have_head) {
+                have_error = 1;
+            } else {
+                head_is_error = is_error_status(st);
+            }
             have_head = 1;
         }
         if (!native_pool_chain_append(conn, r)) {

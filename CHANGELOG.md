@@ -4,6 +4,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.11
+
+### Fixed
+
+- When the server ends the session during a simple-protocol statement (for example `pg_terminate_backend`), the
+  statement raises `ConnectionLostException` and the slot is reconnected at once. Before, it raised
+  `QueryFailedException` with the server's FATAL message, the slot stayed marked healthy over a dead link, and the
+  loss only surfaced on the next statement. When an earlier statement of the same string completed before the link
+  died, nothing changes: the FATAL still raises `QueryFailedException`, and the loss is reported on the next
+  statement, so work the server did is not reported as lost.
+- After a `ConnectionLostException`, the executor refuses every later `execute`, `executeMultiRead` and
+  `executePipeline` by rethrowing that same exception, which names the statement that was lost. The native worker
+  reconnects the slot while the connection is still leased, so before this a statement issued after the loss ran on
+  the fresh session in autocommit: a write made inside a unit of work was committed at once, while the following
+  `commit()` reported that nothing had been committed. A new lease gets a new executor and is not affected.
+
+No API or ABI version change (still `MAJOR 2 / MINOR 6`). The native library in `lib/_native/` is rebuilt for all
+four platforms, since the first fix lives in the native worker.
+
 ## 0.1.10
 
 ### Fixed
