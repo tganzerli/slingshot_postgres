@@ -125,7 +125,10 @@ Experimental (pre-1.0). Native ABI `MAJOR 2 / MINOR 6`.
   temporary tables, `LISTEN`, session advisory locks) never reaches the next. A connection returned inside a
   transaction is rolled back first. `PoolConfig.deferSessionReset` moves the same reset to the first statement
   of the next borrow, saving its round trip; with it, session advisory locks and `LISTEN` live until that next
-  borrow.
+  borrow. `PoolConfig.preservePreparedStatements` keeps statements prepared on the connection across borrows
+  (the reset skips `DEALLOCATE ALL` and `DISCARD PLANS`), on release or deferred. With `sessionResetQuery: null`
+  nothing runs on release, except a `ROLLBACK` when the borrower left a transaction open, decided from the
+  client-side transaction status.
 - **Transactions:** `withTransaction`, `withTransactionOn`, `withPipelinedTransaction` (libpq pipeline mode
   for bulk writes), `withTransactionInstrumented` with `TxDiagnostics`, and `withPostgresConnection` for
   autocommit work on one borrowed connection.
@@ -133,7 +136,10 @@ Experimental (pre-1.0). Native ABI `MAJOR 2 / MINOR 6`.
   contracts of `slingshot`.
 - **Parameters:** `Param` (`Param.int4`, `Param.text`, `Param.timestamptz`, …, `Param.nullValue(oid)`) bound
   through the Extended Query protocol. A typed `NULL` takes its OID from **`PostgresOid`**, the built-in type
-  OIDs: `Param.nullValue(PostgresOid.int4)`.
+  OIDs: `Param.nullValue(PostgresOid.int4)`. One-dimensional arrays go in binary, nulls allowed:
+  `Param.boolArray`, `int2Array`, `int4Array`, `int8Array`, `float8Array`, `textArray` and `uuidArray`, for
+  `WHERE id = ANY($1)` with `[Param.uuidArray(ids)]`; an empty list is the empty array. Arrays in results are not
+  decoded (they read as raw bytes).
 - **Results:** `PostgresResultSet` / `PostgresResultRow` read the native result in place; text and binary
   decoders for the common types, including `numeric` as `PostgresNumeric`. Decoding dispatches on
   **`PostgresType`**, a tag per OID; a column whose OID it does not know (an extension type, for instance) maps to

@@ -151,6 +151,44 @@ sealed class Param {
   /// server can infer the right type at parse time (e.g. for
   /// `WHERE col = $1` predicates).
   const factory Param.nullValue(int oid) = _ParamNull;
+
+  // ── One-dimensional arrays (2026-11-15) ──
+  //
+  // Binary (`array_send` layout), one dimension, lower bound 1. Elements
+  // may be null. An empty list is the empty array (zero dimensions), so
+  // `col = ANY($1)` matches nothing. Each element goes through the scalar
+  // encoder of its type, with the same validation: a malformed uuid or an
+  // out-of-range int2/int4 throws [ArgumentError] at [encode] time.
+
+  /// `bool[]` (OID 1000).
+  const factory Param.boolArray(List<bool?> values) = _ParamBoolArray;
+
+  /// `int2[]` (OID 1005).
+  const factory Param.int2Array(List<int?> values) = _ParamInt2Array;
+
+  /// `int4[]` (OID 1007).
+  const factory Param.int4Array(List<int?> values) = _ParamInt4Array;
+
+  /// `int8[]` (OID 1016).
+  const factory Param.int8Array(List<int?> values) = _ParamInt8Array;
+
+  /// `float8[]` (OID 1022).
+  const factory Param.float8Array(List<double?> values) = _ParamFloat8Array;
+
+  /// `text[]` (OID 1009). Commas, quotes and braces need no escaping: the
+  /// binary form carries each element's length. A NUL character, which a
+  /// PostgreSQL text value cannot hold, throws [ArgumentError].
+  const factory Param.textArray(List<String?> values) = _ParamTextArray;
+
+  /// `uuid[]` (OID 2951). Elements in the forms [Param.uuid] accepts.
+  const factory Param.uuidArray(List<String?> values) = _ParamUuidArray;
+
+  /// An array of [length] NULLs with no element type (`{}` when [length]
+  /// is 0), sent as text with OID 0 so the server types it from where it
+  /// is used, as [Param.nullValue] with OID 0 does. For callers that infer
+  /// the type from the values and have none to infer from; with a known
+  /// type, prefer the typed factories.
+  const factory Param.untypedArrayOfNulls(int length) = _ParamUntypedNullArray;
 }
 
 // ─────────────── Subclasses ───────────────
@@ -441,6 +479,144 @@ final class _ParamNull extends Param {
   int get format => 0;
   @override
   Uint8List? encode() => null;
+}
+
+// ─────────────── Arrays ───────────────
+
+Uint8List _int32Be(int v) =>
+    (ByteData(4)..setInt32(0, v, Endian.big)).buffer.asUint8List();
+
+abstract final class _ParamArray<T extends Object> extends Param {
+  final List<T?> values;
+  const _ParamArray(this.values);
+
+  int get elementOid;
+
+  /// Binary bytes of one non-null element.
+  Uint8List encodeElement(T value);
+
+  @override
+  int get format => 1;
+
+  @override
+  Uint8List encode() {
+    final elements = [
+      for (final v in values) v == null ? null : encodeElement(v),
+    ];
+    final b = BytesBuilder(copy: false)
+      ..add(_int32Be(values.isEmpty ? 0 : 1))
+      ..add(_int32Be(elements.contains(null) ? 1 : 0))
+      ..add(_int32Be(elementOid));
+    if (values.isNotEmpty) {
+      b
+        ..add(_int32Be(values.length))
+        ..add(_int32Be(1));
+    }
+    for (final e in elements) {
+      if (e == null) {
+        b.add(_int32Be(-1));
+      } else {
+        b
+          ..add(_int32Be(e.length))
+          ..add(e);
+      }
+    }
+    return b.takeBytes();
+  }
+}
+
+final class _ParamBoolArray extends _ParamArray<bool> {
+  const _ParamBoolArray(super.values);
+  @override
+  int get oid => PostgresOid.boolArray;
+  @override
+  int get elementOid => PostgresOid.boolean;
+  @override
+  Uint8List encodeElement(bool value) => _ParamBool(value).encode();
+}
+
+final class _ParamInt2Array extends _ParamArray<int> {
+  const _ParamInt2Array(super.values);
+  @override
+  int get oid => PostgresOid.int2Array;
+  @override
+  int get elementOid => PostgresOid.int2;
+  @override
+  Uint8List encodeElement(int value) => _ParamInt2(value).encode();
+}
+
+final class _ParamInt4Array extends _ParamArray<int> {
+  const _ParamInt4Array(super.values);
+  @override
+  int get oid => PostgresOid.int4Array;
+  @override
+  int get elementOid => PostgresOid.int4;
+  @override
+  Uint8List encodeElement(int value) => _ParamInt4(value).encode();
+}
+
+final class _ParamInt8Array extends _ParamArray<int> {
+  const _ParamInt8Array(super.values);
+  @override
+  int get oid => PostgresOid.int8Array;
+  @override
+  int get elementOid => PostgresOid.int8;
+  @override
+  Uint8List encodeElement(int value) => _ParamInt8(value).encode();
+}
+
+final class _ParamFloat8Array extends _ParamArray<double> {
+  const _ParamFloat8Array(super.values);
+  @override
+  int get oid => PostgresOid.float8Array;
+  @override
+  int get elementOid => PostgresOid.float8;
+  @override
+  Uint8List encodeElement(double value) => _ParamFloat8(value).encode();
+}
+
+final class _ParamTextArray extends _ParamArray<String> {
+  const _ParamTextArray(super.values);
+  @override
+  int get oid => PostgresOid.textArray;
+  @override
+  int get elementOid => PostgresOid.text;
+  @override
+  Uint8List encodeElement(String value) {
+    if (value.contains('\u0000')) {
+      throw ArgumentError.value(
+          value, 'values', 'a text element cannot contain a NUL character');
+    }
+    // `text_send` is the raw UTF-8: the text-format bytes are the binary ones.
+    return _ParamText(value).encode();
+  }
+}
+
+final class _ParamUuidArray extends _ParamArray<String> {
+  const _ParamUuidArray(super.values);
+  @override
+  int get oid => PostgresOid.uuidArray;
+  @override
+  int get elementOid => PostgresOid.uuid;
+  @override
+  Uint8List encodeElement(String value) => _ParamUuid(value).encode();
+}
+
+final class _ParamUntypedNullArray extends Param {
+  final int length;
+  const _ParamUntypedNullArray(this.length);
+  @override
+  int get oid => 0;
+  @override
+  int get format => 0;
+  @override
+  Uint8List encode() {
+    if (length < 0) {
+      throw ArgumentError.value(length, 'length', 'must not be negative');
+    }
+    return Uint8List.fromList(
+        '{${List.filled(length, 'NULL').join(',')}}'.codeUnits);
+  }
 }
 
 // ─────────────── Marshalling helpers (internal) ───────────────

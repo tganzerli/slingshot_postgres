@@ -4,6 +4,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.12
+
+### Added
+
+- One-dimensional array parameters, sent in binary with nulls allowed: `Param.boolArray`, `Param.int2Array`,
+  `Param.int4Array`, `Param.int8Array`, `Param.float8Array`, `Param.textArray` and `Param.uuidArray`, for
+  `WHERE id = ANY($1)` without building a string. Elements are validated by the scalar encoders (a malformed uuid
+  or an out-of-range `int2`/`int4` throws `ArgumentError`). `Param.untypedArrayOfNulls(n)` sends an array of `n`
+  NULLs with no element type, typed by the server from context. `PostgresOid` gains the seven array OIDs.
+
+- `PoolConfig.preservePreparedStatements`: a session reset that keeps statements prepared on the connection across
+  borrows. It leaves out `DEALLOCATE ALL` and `DISCARD PLANS` and clears the rest of the session state, on release
+  and with `deferSessionReset`. Statements prepared with SQL `PREPARE` survive too. Requires the default
+  `sessionResetQuery`; `start` throws otherwise.
+
+### Fixed
+
+- With `sessionResetQuery: null`, a connection returned inside a transaction (open or failed) went back to the pool
+  with the transaction still open, and the next borrower inherited it and its locks. It is now rolled back on
+  release, decided from the client-side transaction status, so a release outside a transaction still sends nothing.
+
 ## 0.1.11
 
 ### Fixed

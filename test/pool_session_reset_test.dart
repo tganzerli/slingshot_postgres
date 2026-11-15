@@ -13,6 +13,7 @@ import 'package:slingshot_postgres/src/bindings/postgres_binding.dart';
 import 'package:slingshot_postgres/src/native/postgres_lib_loader.dart';
 import 'package:slingshot_postgres/src/native/postgres_native_pool.dart';
 import 'package:slingshot_postgres/src/postgres/postgres_query_executor.dart';
+import 'package:slingshot_postgres/src/postgres/session_reset.dart';
 import 'package:test/test.dart';
 
 const _connInfo =
@@ -35,7 +36,8 @@ void main() {
   final b = binding;
 
   // A one-connection pool, so consecutive borrows share the session.
-  Future<PostgresConnectionPool?> open({String? reset = 'DISCARD ALL'}) async {
+  Future<PostgresConnectionPool?> open(
+      {String? reset = 'DISCARD ALL', bool preserve = false}) async {
     final pool = PostgresConnectionPool.withBinding(
         b,
         PoolConfig(
@@ -43,7 +45,8 @@ void main() {
             minSize: 1,
             maxSize: 1,
             acquireTimeout: const Duration(seconds: 3),
-            sessionResetQuery: reset));
+            sessionResetQuery: reset,
+            preservePreparedStatements: preserve));
     try {
       await pool.start();
     } on NativePoolStartupException {
@@ -181,6 +184,79 @@ void main() {
     }
   });
 
+  group('with the reset off (sessionResetQuery: null)', () {
+    test('a connection returned inside a transaction is still rolled back',
+        () async {
+      final pool = await open(reset: null);
+      if (pool == null) return;
+      try {
+        await borrow(pool, [
+          'CREATE TABLE IF NOT EXISTS reset_null_txn_probe (x int)',
+          'TRUNCATE reset_null_txn_probe',
+        ]);
+        await borrow(
+            pool, ['BEGIN', 'INSERT INTO reset_null_txn_probe VALUES (1)']);
+        // Same connection (maxSize 1): an open transaction would still see
+        // its own uncommitted row, and BEGIN would only warn.
+        expect(
+            await borrow(pool, [
+              'SELECT count(*)::text AS v FROM reset_null_txn_probe',
+            ]),
+            '0');
+        expect(
+            await borrow(pool, [
+              "SELECT (pg_current_xact_id_if_assigned() IS NULL)::text AS v",
+            ]),
+            'true');
+      } finally {
+        await borrow(pool, ['DROP TABLE IF EXISTS reset_null_txn_probe']);
+        await pool.close();
+      }
+    });
+
+    test('a release outside a transaction sends nothing', () async {
+      final pool = await open(reset: null);
+      final observer = await open();
+      if (pool == null || observer == null) return;
+      try {
+        final leased = await pool.acquire();
+        final exec = PostgresQueryExecutor(b, leased.raw);
+        final rs = await exec.execute(pid);
+        final backend = rs.row(0).getString('v');
+        rs.release();
+        (await exec.execute("SELECT 'release-marker' AS v")).release();
+        await leased.release();
+        // The backend's last statement is still the borrower's: no
+        // ROLLBACK (or anything else) went out on release.
+        expect(
+            await borrow(observer, [
+              'SELECT query AS v FROM pg_stat_activity WHERE pid = $backend'
+            ]),
+            "SELECT 'release-marker' AS v");
+      } finally {
+        await pool.close();
+        await observer.close();
+      }
+    });
+
+    test('an aborted transaction is rolled back too', () async {
+      final pool = await open(reset: null);
+      if (pool == null) return;
+      try {
+        final leased = await pool.acquire();
+        final exec = PostgresQueryExecutor(b, leased.raw);
+        (await exec.execute('BEGIN')).release();
+        await expectLater(exec.execute('SELECT * FROM reset_missing_table'),
+            throwsA(isA<QueryFailedException>()));
+        await leased.release();
+        // Inside an aborted transaction this would fail with 25P02.
+        expect(await borrow(pool, ["SELECT 'ok' AS v"]), 'ok');
+      } finally {
+        await pool.close();
+      }
+    });
+  });
+
   test('the reset deallocates SQL PREPARE; with it off the statement survives',
       () async {
     for (final (reset, survives) in [('DISCARD ALL', false), (null, true)]) {
@@ -196,6 +272,124 @@ void main() {
       } finally {
         await pool.close();
       }
+    }
+  });
+
+  group('preservePreparedStatements on release', () {
+    test('SQL PREPARE survives; the rest of the session is cleared', () async {
+      final pool = await open(preserve: true);
+      if (pool == null) return;
+      try {
+        await borrow(pool, [
+          "PREPARE keep_ps AS SELECT 'p'::text AS v",
+          "SELECT set_config('app.tenant_id', 'clinic-a', false) AS v",
+          'SET search_path TO pg_catalog',
+          'CREATE TEMP TABLE keep_probe (x int)',
+          'LISTEN keep_chan',
+          'SELECT pg_advisory_lock(454545)::text AS v',
+        ]);
+        expect(await borrow(pool, ['EXECUTE keep_ps']), 'p');
+        expect(await borrow(pool, [tenant]), anyOf(isNull, isEmpty));
+        expect(
+            await borrow(pool, ["SELECT current_setting('search_path') AS v"]),
+            isNot('pg_catalog'));
+        expect(
+            await borrow(pool, [
+              "SELECT (to_regclass('pg_temp.keep_probe') IS NULL)::text AS v"
+            ]),
+            'true');
+        expect(
+            await borrow(pool,
+                ['SELECT count(*)::text AS v FROM pg_listening_channels()']),
+            '0');
+        expect(
+            await borrow(pool, [
+              'SELECT count(*)::text AS v FROM pg_locks '
+                  "WHERE locktype = 'advisory' AND objid = 454545 "
+                  'AND pid = pg_backend_pid()'
+            ]),
+            '0');
+      } finally {
+        await pool.close();
+      }
+    });
+
+    test('a connection returned inside an open transaction is rolled back',
+        () async {
+      final pool = await open(preserve: true);
+      if (pool == null) return;
+      try {
+        await borrow(pool, [
+          'CREATE TABLE IF NOT EXISTS keep_txn_probe (x int)',
+          'TRUNCATE keep_txn_probe',
+        ]);
+        // The preserving reset would run fine inside this transaction and
+        // COMMIT it; the rollback must come first.
+        await borrow(pool, ['BEGIN', 'INSERT INTO keep_txn_probe VALUES (1)']);
+        expect(
+            await borrow(
+                pool, ['SELECT count(*)::text AS v FROM keep_txn_probe']),
+            '0');
+      } finally {
+        await borrow(pool, ['DROP TABLE IF EXISTS keep_txn_probe']);
+        await pool.close();
+      }
+    });
+
+    test('an aborted transaction is rolled back too', () async {
+      final pool = await open(preserve: true);
+      if (pool == null) return;
+      try {
+        final leased = await pool.acquire();
+        final exec = PostgresQueryExecutor(b, leased.raw);
+        (await exec.execute("PREPARE keep_ps2 AS SELECT 'q'::text AS v"))
+            .release();
+        (await exec.execute('BEGIN')).release();
+        await expectLater(exec.execute('SELECT * FROM reset_missing_table'),
+            throwsA(isA<QueryFailedException>()));
+        await leased.release();
+        expect(await borrow(pool, ['EXECUTE keep_ps2']), 'q');
+      } finally {
+        await pool.close();
+      }
+    });
+
+    test('a failing reset does not leave the slot in an aborted transaction',
+        () async {
+      final pool = await open(preserve: true);
+      if (pool == null) return;
+      try {
+        DeferredSessionReset.debugFailingStandalone = true;
+        try {
+          await borrow(pool, ["SELECT 'a' AS v"]);
+        } finally {
+          DeferredSessionReset.debugFailingStandalone = false;
+        }
+        // Inside the aborted transaction this would fail with 25P02.
+        expect(await borrow(pool, ["SELECT 'b' AS v"]), 'b');
+        expect(
+            await borrow(pool, [
+              'SELECT (pg_current_xact_id_if_assigned() IS NULL '
+                  "AND now() = statement_timestamp())::text AS v"
+            ]),
+            'true');
+      } finally {
+        await pool.close();
+      }
+    });
+
+    for (final reset in ['RESET ALL', null]) {
+      test('start refuses it with sessionResetQuery $reset', () async {
+        final pool = PostgresConnectionPool.withBinding(
+            b,
+            PoolConfig(
+                connInfo: _connInfo,
+                minSize: 1,
+                maxSize: 1,
+                sessionResetQuery: reset,
+                preservePreparedStatements: true));
+        await expectLater(pool.start(), throwsArgumentError);
+      });
     }
   });
 

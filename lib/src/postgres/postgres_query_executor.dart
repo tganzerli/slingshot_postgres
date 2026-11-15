@@ -175,17 +175,39 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   bool _takeReset() {
     if (!_resetUnchecked) return false;
     _resetUnchecked = false;
-    return DeferredSessionReset.take(_conn);
+    final reset = DeferredSessionReset.take(_conn);
+    if (reset == null) return false;
+    _reset = reset;
+    return true;
   }
+
+  /// The reset taken by [_takeReset]: the full one, or the one that keeps
+  /// prepared statements (`PoolConfig.preservePreparedStatements`).
+  ResetStatements _reset = DeferredSessionReset.full;
+
+  /// The prefix of [_reset]. Read only once [_takeReset] returned true.
+  List<String> get _resetPrefix => _reset.prefix;
 
   /// Runs the reset in a round-trip of its own: the fallback for paths
   /// that cannot carry it as a prefix. A failure is swallowed, as the
   /// release-time reset does (`PostgresConnectionPool._resetSession`).
   Future<void> _standaloneReset() async {
     try {
-      (await _executeSimple(DeferredSessionReset.standalone)).release();
+      (await _executeSimple(_reset.standalone)).release();
     } on QueryFailedException {
-      // Best effort, like the reset on release.
+      // Best effort, like the reset on release. The reset that keeps
+      // prepared statements runs inside its own BEGIN, so a failure there
+      // leaves an aborted transaction behind: end it, or the caller's
+      // statement fails with 25P02.
+      final txStatus = _binding.poolConnTransactionStatus?.call(_conn);
+      if (txStatus == PgTransactionStatus.inTransaction ||
+          txStatus == PgTransactionStatus.inError) {
+        try {
+          (await _executeSimple('ROLLBACK')).release();
+        } on QueryFailedException {
+          // Nothing more to do; the slot is the pool's to recycle.
+        }
+      }
     }
   }
 
@@ -267,11 +289,11 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// connection clean. Saves one round-trip per transaction.
   ///
   /// With a pending session reset ([reset]), the reset prefix
-  /// ([DeferredSessionReset.prefix]) goes first in the same string.
+  /// ([ResetStatements.prefix]) goes first in the same string.
   Future<PostgresResultSet> _executeFusedSimple(String sql,
       {required bool reset, required bool begin}) async {
     final parts = [
-      if (reset) ...DeferredSessionReset.prefix,
+      if (reset) ..._resetPrefix,
       if (begin) 'BEGIN',
       sql,
     ];
@@ -319,7 +341,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// throws, as before.
   bool _consumePrefixResults({required bool reset, required bool begin}) {
     if (reset) {
-      for (var i = 0; i < DeferredSessionReset.prefix.length; i++) {
+      for (var i = 0; i < _resetPrefix.length; i++) {
         final r = _binding.pollResult(_conn);
         if (r == ffi.nullptr) {
           // The Simple protocol stops at the first error; a short chain
@@ -410,7 +432,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// statement (skipped server-side) never ran.
   ///
   /// ABI MINOR 6: with [reset], the session reset prefix
-  /// ([DeferredSessionReset.prefix], then `BEGIN` if [begin]) goes as N
+  /// ([ResetStatements.prefix], then `BEGIN` if [begin]) goes as N
   /// prefixes via `pool_submit_query_params_prefixed_n`.
   Future<PostgresResultSet> _executeExtended(
       String sql, List<Param> params, bool binaryResult,
@@ -420,9 +442,8 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
     final port = ReceivePort();
     final sqlPtr = sql.toNativeUtf8();
     final prefixPtr = begin && !reset ? 'BEGIN'.toNativeUtf8() : null;
-    final prefixes = reset
-        ? [...DeferredSessionReset.prefix, if (begin) 'BEGIN']
-        : const <String>[];
+    final prefixes =
+        reset ? [..._resetPrefix, if (begin) 'BEGIN'] : const <String>[];
     final prefixVec = reset ? malloc<ffi.Pointer<Utf8>>(prefixes.length) : null;
     final prefixAllocated = <ffi.Pointer<Utf8>>[];
     // `marshalled` is assigned inside the try so a throw from
@@ -648,7 +669,8 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
     final fused = _pendingBegin;
     _pendingBegin = false;
     final n = reads.length;
-    final resetLen = reset ? DeferredSessionReset.prefix.length : 0;
+    final resetPrefix = reset ? _resetPrefix : const <String>[];
+    final resetLen = resetPrefix.length;
     final total = resetLen + (fused ? n + 1 : n);
     final native = malloc<ffi.Pointer<Utf8>>(total);
     final allocated = <ffi.Pointer<Utf8>>[];
@@ -658,7 +680,7 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
     try {
       var slot = 0;
       for (var i = 0; i < resetLen; i++) {
-        final p = DeferredSessionReset.prefix[i].toNativeUtf8();
+        final p = resetPrefix[i].toNativeUtf8();
         allocated.add(p);
         native[slot++] = p;
       }

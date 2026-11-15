@@ -102,4 +102,32 @@ abstract final class PostgresOid {
   ///
   /// Source: `uuid_send` + `UUID_LEN`.
   static const int uuid = 2950;
+
+  // ── One-dimensional array types (`Param.*Array`) ──
+  //
+  // Binary layout (`array_send`): int32 ndim, int32 has-null flag, int32
+  // element OID, then per dimension int32 length and int32 lower bound,
+  // then per element int32 byte length (-1 for NULL) and the bytes.
+  // Arrays in results are not decoded: they read as raw bytes.
+
+  /// `bool[]` (`_bool`).
+  static const int boolArray = 1000;
+
+  /// `int2[]` (`_int2`).
+  static const int int2Array = 1005;
+
+  /// `int4[]` (`_int4`).
+  static const int int4Array = 1007;
+
+  /// `text[]` (`_text`).
+  static const int textArray = 1009;
+
+  /// `int8[]` (`_int8`).
+  static const int int8Array = 1016;
+
+  /// `float8[]` (`_float8`).
+  static const int float8Array = 1022;
+
+  /// `uuid[]` (`_uuid`).
+  static const int uuidArray = 2951;
 }

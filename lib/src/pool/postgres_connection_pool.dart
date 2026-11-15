@@ -101,9 +101,12 @@ class PoolConfig {
   /// SQL `PREPARE`. Code that prepares once per connection and executes on
   /// later borrows must pass `null` and keep its own session hygiene.
   ///
-  /// A connection returned inside a transaction is rolled back first. The
-  /// reset costs one round-trip per release. If it fails for any other
-  /// reason, the slot is still returned and the failure is not raised,
+  /// A connection returned inside a transaction is rolled back first, also
+  /// with `null`: there the transaction state is read on the client
+  /// (`PQtransactionStatus`, native library ABI MINOR 6 or later), so a
+  /// release outside a transaction sends nothing. A reset that runs costs
+  /// one round-trip per release. If it fails, the slot is still returned
+  /// and the failure is not raised,
   /// because [PooledConnection.release] runs from `finally` blocks; a broken
   /// reset command therefore stops cleaning the session silently.
   final String? sessionResetQuery;
@@ -129,6 +132,21 @@ class PoolConfig {
   ///   release time.
   final bool deferSessionReset;
 
+  /// Keeps statements prepared on a connection across borrows: the
+  /// built-in reset leaves out `DEALLOCATE ALL` and `DISCARD PLANS` and
+  /// still clears the rest of the session state listed under
+  /// [sessionResetQuery]. Works on release and with [deferSessionReset].
+  ///
+  /// Statements prepared with SQL `PREPARE` by one borrower are visible to
+  /// the next; the names a borrower picks must not collide.
+  ///
+  /// Requires [sessionResetQuery] to keep its default and a native library
+  /// with ABI MINOR 6 or later: this reset does not fail inside a
+  /// transaction the way `DISCARD ALL` does, so the rollback of a
+  /// connection returned inside one is decided from the transaction state.
+  /// Otherwise [PostgresConnectionPool.start] throws.
+  final bool preservePreparedStatements;
+
   const PoolConfig({
     required this.connInfo,
     this.minSize = 2,
@@ -137,6 +155,7 @@ class PoolConfig {
     this.instrumentationEnabled = false,
     this.sessionResetQuery = _defaultResetQuery,
     this.deferSessionReset = false,
+    this.preservePreparedStatements = false,
   })  : assert(minSize >= 0),
         assert(maxSize >= minSize),
         assert(maxSize > 0);
@@ -375,6 +394,19 @@ class PostgresConnectionPool {
           'deferSessionReset uses the built-in DISCARD ALL equivalent; '
               'a custom reset query cannot be deferred');
     }
+    if (config.preservePreparedStatements) {
+      if (config.sessionResetQuery != _defaultResetQuery) {
+        throw ArgumentError.value(
+            config.sessionResetQuery,
+            'sessionResetQuery',
+            'preservePreparedStatements replaces the built-in reset; '
+                'it cannot be combined with a custom or disabled reset query');
+      }
+      if (_binding.poolConnTransactionStatus == null) {
+        throw StateError('preservePreparedStatements needs a native library '
+            'with ABI MINOR 6 or later (pool_conn_transaction_status)');
+      }
+    }
     _nativePool = NativePool.create(
       binding: _binding,
       conninfo: config.connInfo,
@@ -460,15 +492,38 @@ class PostgresConnectionPool {
   // SQLSTATE to tell it apart), so it rolls back and retries once. A lost
   // connection is skipped, since the worker's reconnect opens a new session.
   Future<void> _resetSession(ffi.Pointer<ffi.Void> conn) async {
+    if (_nativePool == null || _closed) return;
     final query = config.sessionResetQuery;
-    if (query == null || _nativePool == null || _closed) return;
     final txStatus = _binding.poolConnTransactionStatus;
+    if (query == null) {
+      // Reset off: only end a transaction the borrower left open. Without
+      // the symbol there is no free way to tell, and the release stays a
+      // no-op as before.
+      if (txStatus != null) {
+        await _rollbackIfInTransaction(conn, txStatus(conn));
+      }
+      return;
+    }
     if (config.deferSessionReset && txStatus != null) {
       return _deferReset(conn, txStatus(conn));
     }
     final exec =
         PostgresQueryExecutor(_binding, conn, applyDeferredReset: false);
     Future<void> run(String sql) async => (await exec.execute(sql)).release();
+    if (config.preservePreparedStatements) {
+      // This reset runs fine inside a transaction, so the rollback cannot
+      // wait for it to fail as DISCARD ALL does; `start` guarantees the
+      // symbol.
+      await _rollbackIfInTransaction(conn, txStatus!(conn));
+      try {
+        await run(DeferredSessionReset.preservingPrepared.standalone);
+      } on Object {
+        // Best effort: the slot goes back either way, but not inside the
+        // aborted transaction a failure in the reset's BEGIN leaves.
+        await _rollbackIfInTransaction(conn, txStatus(conn));
+      }
+      return;
+    }
     try {
       await run(query);
     } on QueryFailedException {
@@ -490,19 +545,28 @@ class PostgresConnectionPool {
   // an idle open transaction holds its locks. Then the connection is
   // marked; its next first statement carries the reset.
   Future<void> _deferReset(ffi.Pointer<ffi.Void> conn, int txStatus) async {
-    if (txStatus == PgTransactionStatus.inTransaction ||
-        txStatus == PgTransactionStatus.inError) {
-      try {
-        final exec =
-            PostgresQueryExecutor(_binding, conn, applyDeferredReset: false);
-        (await exec.execute('ROLLBACK')).release();
-      } on Object {
-        // Best effort, as the reset on release: a lost link opens a new
-        // session anyway, and the mark below still resets the next borrow.
-      }
-    }
-    DeferredSessionReset.mark(conn);
+    await _rollbackIfInTransaction(conn, txStatus);
+    DeferredSessionReset.mark(conn,
+        preservePrepared: config.preservePreparedStatements);
     _deferredMarked.add(conn);
+  }
+
+  // Rolls back a connection returned inside a transaction (open or
+  // failed), from the status libpq tracks on the client. Best effort, as
+  // the reset on release: a lost link opens a new session anyway.
+  Future<void> _rollbackIfInTransaction(
+      ffi.Pointer<ffi.Void> conn, int txStatus) async {
+    if (txStatus != PgTransactionStatus.inTransaction &&
+        txStatus != PgTransactionStatus.inError) {
+      return;
+    }
+    try {
+      final exec =
+          PostgresQueryExecutor(_binding, conn, applyDeferredReset: false);
+      (await exec.execute('ROLLBACK')).release();
+    } on Object {
+      // Best effort: the slot goes back either way.
+    }
   }
 
   // Connections this pool marked, unmarked when the native pool goes

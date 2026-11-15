@@ -298,4 +298,111 @@ void main() {
       }
     });
   });
+
+  group('array params', () {
+    test('int4Array([1, null, 3]) → array_send layout, oid 1007, binary', () {
+      final p = Param.int4Array([1, null, 3]);
+      expect(p.oid, PostgresOid.int4Array);
+      expect(p.format, 1);
+      expect(
+          _hex(_encode(p)),
+          '00000001' // ndim
+          '00000001' // has null
+          '00000017' // element oid 23
+          '00000003' // length
+          '00000001' // lower bound
+          '00000004'
+          '00000001' // 1
+          'ffffffff' // NULL
+          '00000004'
+          '00000003'); // 3
+    });
+
+    test('empty list → zero dimensions, no null flag', () {
+      expect(_hex(_encode(Param.int8Array(const []))),
+          '00000000' '00000000' '00000014');
+    });
+
+    test('text elements carry their length: no escaping', () {
+      final bytes = _encode(Param.textArray(['a,"b"}', 'ç']));
+      expect(
+          _hex(bytes),
+          '00000001'
+          '00000000'
+          '00000019'
+          '00000002'
+          '00000001'
+          '00000006'
+          '612c2262227d' // a,"b"}
+          '00000002'
+          'c3a7'); // ç
+    });
+
+    test('uuidArray encodes 16 bytes per element', () {
+      final bytes = _encode(
+          Param.uuidArray(['00112233-4455-6677-8899-aabbccddeeff', null]));
+      expect(
+          _hex(bytes),
+          '00000001'
+          '00000001'
+          '00000b86'
+          '00000002'
+          '00000001'
+          '00000010'
+          '00112233445566778899aabbccddeeff'
+          'ffffffff');
+    });
+
+    test('element validation is the scalar one', () {
+      expect(
+          () => Param.uuidArray(['not-a-uuid']).encode(), throwsArgumentError);
+      expect(() => Param.int2Array([70000]).encode(), throwsArgumentError);
+      expect(() => Param.int4Array([1 << 40]).encode(), throwsArgumentError);
+      expect(() => Param.textArray(['a\u0000b']).encode(), throwsArgumentError);
+    });
+
+    test('each factory carries its array oid and element oid', () {
+      final cases = <Param, (int, int)>{
+        Param.boolArray([true]): (PostgresOid.boolArray, PostgresOid.boolean),
+        Param.int2Array([1]): (PostgresOid.int2Array, PostgresOid.int2),
+        Param.int4Array([1]): (PostgresOid.int4Array, PostgresOid.int4),
+        Param.int8Array([1]): (PostgresOid.int8Array, PostgresOid.int8),
+        Param.float8Array([1.5]): (PostgresOid.float8Array, PostgresOid.float8),
+        Param.textArray(['x']): (PostgresOid.textArray, PostgresOid.text),
+        Param.uuidArray(['00112233445566778899aabbccddeeff']): (
+          PostgresOid.uuidArray,
+          PostgresOid.uuid
+        ),
+      };
+      for (final MapEntry(key: p, value: (arrayOid, elementOid))
+          in cases.entries) {
+        expect(p.oid, arrayOid);
+        expect(p.format, 1);
+        final b = ByteData.sublistView(_encode(p));
+        expect(b.getInt32(8), elementOid, reason: '${p.runtimeType}');
+      }
+    });
+
+    test('untypedArrayOfNulls is a text literal with oid 0', () {
+      final p = Param.untypedArrayOfNulls(2);
+      expect(p.oid, 0);
+      expect(p.format, 0);
+      expect(String.fromCharCodes(_encode(p)), '{NULL,NULL}');
+      expect(String.fromCharCodes(_encode(Param.untypedArrayOfNulls(0))), '{}');
+      expect(() => Param.untypedArrayOfNulls(-1).encode(), throwsArgumentError);
+    });
+
+    test('marshals as one binary value', () {
+      final m = marshalParams([
+        Param.int4Array([7])
+      ]);
+      try {
+        expect(m.types[0], PostgresOid.int4Array);
+        expect(m.formats[0], 1);
+        expect(m.lengths[0], 28);
+      } finally {
+        freeMarshalledParams(m);
+      }
+    });
+  });
 }

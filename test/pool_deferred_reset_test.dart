@@ -44,7 +44,8 @@ void main() {
   }
   final b = binding;
 
-  Future<PostgresConnectionPool?> open({bool defer = true}) async {
+  Future<PostgresConnectionPool?> open(
+      {bool defer = true, bool preserve = false}) async {
     final pool = PostgresConnectionPool.withBinding(
         b,
         PoolConfig(
@@ -53,7 +54,8 @@ void main() {
             maxSize: 1,
             acquireTimeout: const Duration(seconds: 3),
             sessionResetQuery: defer ? 'DISCARD ALL' : null,
-            deferSessionReset: defer));
+            deferSessionReset: defer,
+            preservePreparedStatements: preserve));
     try {
       await pool.start();
     } on NativePoolStartupException {
@@ -381,5 +383,156 @@ void main() {
     } finally {
       await pool.close();
     }
+  });
+
+  // preservePreparedStatements: the same clean session, except that the
+  // statement [dirty] prepared is still there.
+  group('deferred, preserving prepared statements', () {
+    const cleanKeepingPrepared = '|4MB|false|0|0|1';
+
+    for (final MapEntry(key: name, value: step) in firstStatements.entries) {
+      test('the next borrow sees a clean session — first statement $name',
+          () async {
+        final pool = await open(preserve: true);
+        if (pool == null) return;
+        try {
+          await borrow(pool, dirty);
+          expect(await borrow(pool, [step]), cleanKeepingPrepared);
+          expect(await borrow(pool, [_s('EXECUTE deferred_ps')]), 'p');
+        } finally {
+          await pool.close();
+        }
+      });
+    }
+
+    test('the reset rides a multi-read', () async {
+      final pool = await open(preserve: true);
+      if (pool == null) return;
+      try {
+        await borrow(pool, dirty);
+        final leased = await pool.acquire();
+        try {
+          final exec = PostgresQueryExecutor(b, leased.raw);
+          final rs = await exec.executeMultiRead([stateSql]);
+          expect(first(rs[0]), cleanKeepingPrepared);
+        } finally {
+          await leased.release();
+        }
+      } finally {
+        await pool.close();
+      }
+    });
+
+    test('a pipeline pays the preserving reset standalone', () async {
+      final pool = await open(preserve: true);
+      if (pool == null) return;
+      try {
+        await borrow(pool, dirty);
+        final leased = await pool.acquire();
+        try {
+          final exec = PostgresQueryExecutor(b, leased.raw);
+          await exec.executePipeline(["SELECT 'ignored'"]);
+          expect(first(await exec.execute(stateSql)), cleanKeepingPrepared);
+        } finally {
+          await leased.release();
+        }
+      } finally {
+        await pool.close();
+      }
+    });
+
+    for (final (name, step) in [
+      ('Simple', _s(stateSql)),
+      (
+        'Extended',
+        _p('SELECT \$1::text || ($stateSql) AS v', [const Param.text('')])
+      ),
+    ]) {
+      test(
+          'a failure inside the prefix recovers with the preserving reset '
+          '— $name', () async {
+        final pool = await open(preserve: true);
+        if (pool == null) return;
+        try {
+          await borrow(pool, dirty);
+          DeferredSessionReset.debugFailingPrefix = true;
+          try {
+            expect(await borrow(pool, [step]), cleanKeepingPrepared);
+          } finally {
+            DeferredSessionReset.debugFailingPrefix = false;
+          }
+        } finally {
+          await pool.close();
+        }
+      });
+    }
+
+    test(
+        'a failing standalone reset does not leave an aborted transaction '
+        '— Extended without the N-prefix submit', () async {
+      final pool = await open(preserve: true);
+      if (pool == null) return;
+      try {
+        await borrow(pool, dirty);
+        PostgresQueryExecutor.debugForceStandaloneReset = true;
+        DeferredSessionReset.debugFailingStandalone = true;
+        try {
+          // Inside the aborted transaction this would fail with 25P02.
+          expect(
+              await borrow(pool, [
+                _p('SELECT \$1::text AS v', [const Param.text('ok')])
+              ]),
+              'ok');
+        } finally {
+          PostgresQueryExecutor.debugForceStandaloneReset = false;
+          DeferredSessionReset.debugFailingStandalone = false;
+        }
+      } finally {
+        await pool.close();
+      }
+    });
+
+    test(
+        'a failing prefix whose standalone recovery also fails still runs '
+        'the statement', () async {
+      final pool = await open(preserve: true);
+      if (pool == null) return;
+      try {
+        await borrow(pool, dirty);
+        DeferredSessionReset.debugFailingPrefix = true;
+        DeferredSessionReset.debugFailingStandalone = true;
+        try {
+          expect(await borrow(pool, [_s("SELECT 'ok' AS v")]), 'ok');
+        } finally {
+          DeferredSessionReset.debugFailingPrefix = false;
+          DeferredSessionReset.debugFailingStandalone = false;
+        }
+      } finally {
+        await pool.close();
+      }
+    });
+
+    test('a connection returned with an open transaction is rolled back',
+        () async {
+      final pool = await open(preserve: true);
+      final observer = await open(defer: false);
+      if (pool == null || observer == null) return;
+      try {
+        final leased = await pool.acquire();
+        final exec = PostgresQueryExecutor(b, leased.raw);
+        (await exec.execute('BEGIN')).release();
+        final pid =
+            first(await exec.execute('SELECT pg_backend_pid()::text AS v'));
+        await leased.release();
+        expect(
+            await borrow(observer, [
+              _s('SELECT state AS v FROM pg_stat_activity WHERE pid = $pid')
+            ]),
+            'idle');
+      } finally {
+        await pool.close();
+        await observer.close();
+      }
+    });
   });
 }
