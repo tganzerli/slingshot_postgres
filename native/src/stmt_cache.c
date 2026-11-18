@@ -265,3 +265,10 @@ void stmt_cache_queue_close(stmt_cache_t* c, const char* name) {
 void stmt_cache_pending_clear(stmt_cache_t* c) {
     c->n_pending = 0;
 }
+
+int stmt_cache_contains(const stmt_cache_t* c, const stmt_entry_t* e) {
+    for (const stmt_entry_t* x = c->head; x != NULL; x = x->next) {
+        if (x == e) return 1;
+    }
+    return 0;
+}

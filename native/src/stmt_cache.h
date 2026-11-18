@@ -88,6 +88,10 @@ int stmt_cache_insert(stmt_cache_t* c, const char* sql, int32_t n_params,
 /// (the server reported it missing, so nothing is left to close).
 void stmt_cache_remove(stmt_cache_t* c, stmt_entry_t* e, int queue_close);
 
+/// Whether `e` is still an entry of `c` (it may have been removed since it
+/// was looked up).
+int stmt_cache_contains(const stmt_cache_t* c, const stmt_entry_t* e);
+
 /// Queues `name` for close. When the queue is full the oldest name is
 /// dropped: that statement stays on the server until the session ends.
 void stmt_cache_queue_close(stmt_cache_t* c, const char* name);

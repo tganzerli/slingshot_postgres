@@ -66,7 +66,10 @@
 //       statement), `pool_set_statement_cache_capacity` (0 = off) and
 //       `get_error_sqlstate` (the SQLSTATE of a result). 2026-11-16.
 //       Existing symbols unchanged.
-#define NATIVE_DB_ABI_VERSION_MINOR 7
+//   8 → `pool_submit_batch`: N Extended queries, each with its own params,
+//       in one pipeline under one Sync, through the statement cache when
+//       asked; one result per query. 2026-11-16. Existing symbols unchanged.
+#define NATIVE_DB_ABI_VERSION_MINOR 8
 
 #ifdef __cplusplus
 extern "C" {

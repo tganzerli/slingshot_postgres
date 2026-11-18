@@ -1066,8 +1066,9 @@ static int send_close(PGconn* pg, const char* name) {
 }
 
 // Drops the last node of the result chain (the query's result before a
-// retry). The chain holds at most the prefixes plus one, so the walk is
-// short.
+// retry; a batch retry calls it once per statement). Each call walks the
+// chain from the head, so a batch retry is O(N²) in the batch size: fine
+// for the handful of reads a batch carries, and it only runs on a retry.
 static void chain_drop_tail(native_conn_t* conn) {
     pg_result_node_t* node = conn->chain_head;
     if (node == NULL) return;
@@ -1082,36 +1083,54 @@ static void chain_drop_tail(native_conn_t* conn) {
     conn->chain_tail = node;
 }
 
-// One cached job, laid out as above. `*prepared_ok` is set when the
-// server confirmed the Prepare (the caller then caches `name`). With
-// `name` NULL (capacity 0, flushing what is left) the query goes unnamed.
+// One statement of a cached job (ABI MINOR 7: one; MINOR 8: a batch).
+typedef struct {
+    const char* sql;
+    int32_t n_params;
+    const int32_t* types;          // into the slot's flat arrays
+    const char* const* values;
+    const int* lengths;
+    const int* formats;
+    int32_t dup_of;                // earlier item with the same key, or -1
+    stmt_entry_t* entry;           // cache hit (of this item or of dup_of)
+    char fresh[STMT_NAME_LEN];     // name of a Prepare this job sends
+    const char* name;              // NULL = unnamed
+    int do_prepare;
+    int prepared_ok;               // the server confirmed the Prepare
+    PGresult* prep_err;            // the Prepare's error, takes the query's place
+} batch_item_t;
+
+// One cached job, laid out as above, for `n_items` statements: each sends
+// its Prepare (on a miss) and its query in segment 2, after the prefixes.
+// `items[i].prepared_ok` is set when the server confirmed item i's Prepare
+// (the caller then caches its name). An item with `name` NULL goes unnamed.
+// Results reach the chain as one per prefix, then one per item, in order.
 static int64_t cached_pipeline(native_conn_t* conn,
                                char* const* prefixes,
                                int32_t n_prefix,
                                int flush_pending,
-                               const char* name,
-                               int do_prepare,
-                               const char* sql,
-                               int32_t n_params,
-                               const Oid* types_oid,
-                               const char* const* param_values,
-                               const int* param_lengths,
-                               const int* param_formats,
+                               batch_item_t* items,
+                               int32_t n_items,
                                int result_format,
-                               int64_t timeout_ms,
-                               int* prepared_ok) {
+                               int64_t timeout_ms) {
     PGconn* pg = conn->pg;
     int sock = PQsocket(pg);
     if (sock < 0) return WORKER_PORT_ABORTED;
     stmt_cache_t* c = &conn->stmts;
 
     int32_t n_close = flush_pending ? c->n_pending : 0;
-    int32_t cap_kinds = n_close + n_prefix + 2;
-    unsigned char* kinds = (unsigned char*)malloc((size_t)cap_kinds);
-    if (kinds == NULL) return WORKER_PORT_ABORTED;
+    size_t cap_kinds = (size_t)n_close + (size_t)n_prefix + 2 * (size_t)n_items;
+    unsigned char* kinds = (unsigned char*)malloc(cap_kinds);
+    int32_t* kitem = (int32_t*)malloc(cap_kinds * sizeof(int32_t));
+    if (kinds == NULL || kitem == NULL) {
+        free(kinds);
+        free(kitem);
+        return WORKER_PORT_ABORTED;
+    }
+#define CP_FREE() do { free(kinds); free(kitem); } while (0)
 
     if (PQenterPipelineMode(pg) == 0) {
-        free(kinds);
+        CP_FREE();
         return WORKER_PORT_ABORTED;
     }
 
@@ -1127,12 +1146,13 @@ static int64_t cached_pipeline(native_conn_t* conn,
             status = WORKER_PORT_ABORTED;
             break;
         }
+        kitem[nk] = -1;
         kinds[nk++] = K_DISCARD;
         if (!STMT_USE_CLOSE || i == n_close - 1) {
             if (PQpipelineSync(pg) == 0) {
                 PQexitPipelineMode(pg);
                 atomic_store(&conn->health, CONN_HEALTH_LOST);
-                free(kinds);
+                CP_FREE();
                 return WORKER_PORT_ABORTED;
             }
             expected_syncs++;
@@ -1143,7 +1163,7 @@ static int64_t cached_pipeline(native_conn_t* conn,
         if (PQpipelineSync(pg) == 0) {
             PQexitPipelineMode(pg);
             atomic_store(&conn->health, CONN_HEALTH_LOST);
-            free(kinds);
+            CP_FREE();
             return WORKER_PORT_ABORTED;
         }
         expected_syncs++;
@@ -1152,40 +1172,48 @@ static int64_t cached_pipeline(native_conn_t* conn,
     // whose close did not run stays on the server until the session ends.
     if (n_close > 0) stmt_cache_pending_clear(c);
 
-    // Segment 2 — prefixes, Prepare on a miss, the query.
+    // Segment 2 — prefixes, then per item: Prepare on a miss, the query.
     int32_t seg2_start = nk;
     for (int32_t i = 0; i < n_prefix && status == WORKER_PORT_OK; i++) {
         if (PQsendQueryParams(pg, prefixes[i], 0, NULL, NULL, NULL, NULL, 0)
                 != 1) {
             status = WORKER_PORT_ABORTED;
         } else {
+            kitem[nk] = -1;
             kinds[nk++] = K_CHAIN;
         }
     }
-    if (status == WORKER_PORT_OK && do_prepare && name != NULL) {
-        if (PQsendPrepare(pg, name, sql, n_params, types_oid) != 1) {
-            status = WORKER_PORT_ABORTED;
-        } else {
+    for (int32_t i = 0; i < n_items && status == WORKER_PORT_OK; i++) {
+        batch_item_t* it = &items[i];
+        const Oid* types_oid = (it->n_params > 0 && it->types != NULL)
+            ? (const Oid*)it->types : NULL;  // same width, see execute_single_params
+        if (it->do_prepare && it->name != NULL) {
+            if (PQsendPrepare(pg, it->name, it->sql, it->n_params, types_oid)
+                    != 1) {
+                status = WORKER_PORT_ABORTED;
+                break;
+            }
+            kitem[nk] = i;
             kinds[nk++] = K_PREPARE;
         }
-    }
-    if (status == WORKER_PORT_OK) {
-        int sent = (name != NULL)
-            ? PQsendQueryPrepared(pg, name, n_params, param_values,
-                                  param_lengths, param_formats, result_format)
-            : PQsendQueryParams(pg, sql, n_params, types_oid, param_values,
-                                param_lengths, param_formats, result_format);
+        int sent = (it->name != NULL)
+            ? PQsendQueryPrepared(pg, it->name, it->n_params, it->values,
+                                  it->lengths, it->formats, result_format)
+            : PQsendQueryParams(pg, it->sql, it->n_params, types_oid,
+                                it->values, it->lengths, it->formats,
+                                result_format);
         if (sent != 1) {
             status = WORKER_PORT_ABORTED;
-        } else {
-            kinds[nk++] = K_QUERY;
+            break;
         }
+        kitem[nk] = i;
+        kinds[nk++] = K_QUERY;
     }
     if (nk > seg2_start) {
         if (PQpipelineSync(pg) == 0) {
             PQexitPipelineMode(pg);
             atomic_store(&conn->health, CONN_HEALTH_LOST);
-            free(kinds);
+            CP_FREE();
             return WORKER_PORT_ABORTED;
         }
         expected_syncs++;
@@ -1193,7 +1221,7 @@ static int64_t cached_pipeline(native_conn_t* conn,
     if (expected_syncs == 0) {
         // Nothing went out at all.
         PQexitPipelineMode(pg);
-        free(kinds);
+        CP_FREE();
         return WORKER_PORT_ABORTED;
     }
 
@@ -1206,7 +1234,7 @@ static int64_t cached_pipeline(native_conn_t* conn,
         // Not fully sent: give the session up (see execute_prefixed_params).
         PQexitPipelineMode(pg);
         atomic_store(&conn->health, CONN_HEALTH_LOST);
-        free(kinds);
+        CP_FREE();
         native_pool_free_result_chain(conn);
         return WORKER_PORT_ABORTED;
     }
@@ -1214,7 +1242,6 @@ static int64_t cached_pipeline(native_conn_t* conn,
     int cancelled = (status != WORKER_PORT_OK);
     int syncs = 0;
     int32_t ki = 0;
-    PGresult* prep_err = NULL;
     while (syncs < expected_syncs) {
         if (atomic_load(&conn->shutdown_requested)) {
             issue_cancel(pg);
@@ -1264,14 +1291,17 @@ static int64_t cached_pipeline(native_conn_t* conn,
             PQclear(r);
             continue;
         }
-        int kind = kinds[ki++];
+        int kind = kinds[ki];
+        int32_t idx = kitem[ki];
+        ki++;
         if (kind == K_PREPARE) {
             // Recorded even on a cancelled job: the statement exists.
+            batch_item_t* it = &items[idx];
             if (st == PGRES_COMMAND_OK) {
-                *prepared_ok = 1;
+                it->prepared_ok = 1;
                 PQclear(r);
-            } else if (st == PGRES_FATAL_ERROR && prep_err == NULL) {
-                prep_err = r;  // takes the query's place below
+            } else if (st == PGRES_FATAL_ERROR && it->prep_err == NULL) {
+                it->prep_err = r;  // takes the query's place below
             } else {
                 PQclear(r);
             }
@@ -1281,20 +1311,26 @@ static int64_t cached_pipeline(native_conn_t* conn,
             PQclear(r);
             continue;
         }
-        if (kind == K_QUERY && prep_err != NULL) {
+        if (kind == K_QUERY && items[idx].prep_err != NULL) {
             // The query was aborted by the failed Prepare; the Prepare's
             // error is the one that explains it (syntax, unknown table).
             PQclear(r);
-            r = prep_err;
-            prep_err = NULL;
+            r = items[idx].prep_err;
+            items[idx].prep_err = NULL;
         }
         if (!native_pool_chain_append(conn, r)) {
             PQclear(r);
             status = WORKER_PORT_ABORTED;
         }
     }
-    if (prep_err != NULL) PQclear(prep_err);
-    free(kinds);
+    for (int32_t i = 0; i < n_items; i++) {
+        if (items[i].prep_err != NULL) {
+            PQclear(items[i].prep_err);
+            items[i].prep_err = NULL;
+        }
+    }
+    CP_FREE();
+#undef CP_FREE
 
     if (syncs < expected_syncs || PQexitPipelineMode(pg) == 0) {
         // Still in pipeline mode: flag the slot for reset, as
@@ -1305,6 +1341,174 @@ static int64_t cached_pipeline(native_conn_t* conn,
     }
     if (status != WORKER_PORT_OK) native_pool_free_result_chain(conn);
     return status;
+}
+
+static int same_key(const batch_item_t* a, const batch_item_t* b) {
+    if (a->n_params != b->n_params || strcmp(a->sql, b->sql) != 0) return 0;
+    for (int32_t i = 0; i < a->n_params; i++) {
+        int32_t x = (a->types != NULL) ? a->types[i] : 0;
+        int32_t y = (b->types != NULL) ? b->types[i] : 0;
+        if (x != y) return 0;
+    }
+    return 1;
+}
+
+// ABI MINOR 8: `n_items` Extended statements in one pipeline, through the
+// statement cache when `use_cache` and the cache is on (unnamed otherwise).
+// The statements' params are consecutive in the flat arrays. Retries the
+// whole batch once on a stale statement or a taken name when the
+// connection is idle after the error (see `pool_submit_batch`).
+static int64_t execute_batch(native_conn_t* conn,
+                             char* const* prefixes,
+                             int32_t n_prefix,
+                             int32_t n_items,
+                             char* const* sqls,
+                             const int32_t* counts,
+                             const int32_t* param_types,
+                             const char* const* param_values,
+                             const int* param_lengths,
+                             const int* param_formats,
+                             int result_format,
+                             int use_cache,
+                             int64_t timeout_ms) {
+    stmt_cache_t* c = &conn->stmts;
+    int32_t cap = atomic_load(&conn->pool->stmt_capacity);
+    if (cap != c->capacity) stmt_cache_set_capacity(c, cap);
+    int caching = use_cache && c->capacity > 0;
+
+    batch_item_t* items =
+        (batch_item_t*)calloc((size_t)n_items, sizeof(batch_item_t));
+    if (items == NULL) return WORKER_PORT_ABORTED;
+    int32_t off = 0;
+    for (int32_t i = 0; i < n_items; i++) {
+        batch_item_t* it = &items[i];
+        it->sql = sqls[i];
+        it->n_params = counts[i];
+        it->types = (counts[i] > 0 && param_types != NULL)
+            ? param_types + off : NULL;
+        it->values = (counts[i] > 0) ? param_values + off : NULL;
+        it->lengths = (counts[i] > 0) ? param_lengths + off : NULL;
+        it->formats = (counts[i] > 0) ? param_formats + off : NULL;
+        off += counts[i];
+    }
+
+    native_pool_free_result_chain(conn);
+
+    for (int attempt = 0; ; attempt++) {
+        // A retry runs without the prefixes: they already ran, and their
+        // results are already in the chain.
+        char* const* pfx = (attempt == 0) ? prefixes : NULL;
+        int32_t npfx = (attempt == 0) ? n_prefix : 0;
+
+#if !STMT_USE_CLOSE
+        if (c->n_pending > 0 &&
+            PQtransactionStatus(conn->pg) == PQTRANS_INTRANS) {
+            if (!flush_closes_in_transaction(conn, timeout_ms)) {
+                native_pool_free_result_chain(conn);
+                free(items);
+                return WORKER_PORT_ABORTED;
+            }
+        }
+#endif
+        // Names. A key repeated inside the batch reuses the earlier
+        // item's name: one Prepare, or one cache entry, per key.
+        for (int32_t i = 0; i < n_items; i++) {
+            batch_item_t* it = &items[i];
+            it->dup_of = -1;
+            it->entry = NULL;
+            it->name = NULL;
+            it->do_prepare = 0;
+            it->prepared_ok = 0;
+            it->prep_err = NULL;
+            if (!caching) continue;
+            for (int32_t j = 0; j < i; j++) {
+                if (items[j].dup_of < 0 && same_key(&items[j], it)) {
+                    it->dup_of = j;
+                    break;
+                }
+            }
+            if (it->dup_of >= 0) {
+                it->entry = items[it->dup_of].entry;
+                it->name = items[it->dup_of].name;
+                continue;
+            }
+            it->entry = stmt_cache_lookup(c, it->sql, it->n_params, it->types);
+            if (it->entry != NULL) {
+                it->name = it->entry->name;
+            } else {
+                stmt_cache_next_name(c, it->fresh);
+                it->name = it->fresh;
+                it->do_prepare = 1;
+            }
+        }
+        int flush = c->n_pending > 0 && pending_close_allowed(conn->pg);
+
+        int64_t status = cached_pipeline(conn, pfx, npfx, flush, items,
+                                         n_items, result_format, timeout_ms);
+
+        // Retry decision first, while the hit entries are still valid (the
+        // inserts below can evict them). The query results are the last
+        // n_items of the chain; the first error among them decides.
+        int retry = 0;
+        if (status == WORKER_PORT_OK && caching) {
+            int32_t len = 0;
+            for (pg_result_node_t* n = conn->chain_head; n; n = n->next) len++;
+            pg_result_node_t* node = conn->chain_head;
+            for (int32_t k = 0; node != NULL && k < len - n_items; k++) {
+                node = node->next;
+            }
+            for (int32_t i = 0; node != NULL && i < n_items;
+                 i++, node = node->next) {
+                PGresult* q = node->result;
+                if (!is_error_status(PQresultStatus(q))) continue;
+                const char* state = PQresultErrorField(q, PG_DIAG_SQLSTATE);
+                batch_item_t* it = &items[i];
+                batch_item_t* owner = (it->dup_of >= 0) ? &items[it->dup_of]
+                                                        : it;
+                if (owner->entry != NULL && is_missing_statement(state)) {
+                    stmt_cache_remove(c, owner->entry, 0);  // gone
+                    owner->entry = NULL;
+                    retry = 1;
+                } else if (owner->entry != NULL && is_stale_plan(q, state)) {
+                    stmt_cache_remove(c, owner->entry, 1);  // close it
+                    owner->entry = NULL;
+                    retry = 1;
+                } else if (owner->do_prepare && state != NULL &&
+                           strcmp(state, "42P05") == 0) {
+                    retry = 1;  // name taken by the caller's own PREPARE
+                }
+                break;  // later results were aborted by this one
+            }
+            if (retry) {
+                // A stale statement usually means the session lost them
+                // all (DEALLOCATE ALL, a reset): drop every other entry
+                // this batch hit too, so the retry prepares afresh instead
+                // of failing on the next stale one. Close them, in case they
+                // do still exist (a Close of a missing name is harmless; the
+                // DEALLOCATE fallback isolates each in its own Sync).
+                for (int32_t i = 0; i < n_items; i++) {
+                    batch_item_t* it = &items[i];
+                    if (it->dup_of < 0 && it->entry != NULL &&
+                        stmt_cache_contains(c, it->entry)) {
+                        stmt_cache_remove(c, it->entry, 1);
+                    }
+                }
+            }
+        }
+        for (int32_t i = 0; i < n_items; i++) {
+            if (items[i].prepared_ok) {
+                stmt_cache_insert(c, items[i].sql, items[i].n_params,
+                                  items[i].types, items[i].fresh);
+            }
+        }
+        // Inside a transaction the error already aborted it: hand it back.
+        if (status != WORKER_PORT_OK || !retry || attempt > 0 ||
+            PQtransactionStatus(conn->pg) != PQTRANS_IDLE) {
+            free(items);
+            return status;
+        }
+        for (int32_t i = 0; i < n_items; i++) chain_drop_tail(conn);
+    }
 }
 
 static int64_t execute_cached(native_conn_t* conn,
@@ -1336,72 +1540,13 @@ static int64_t execute_cached(native_conn_t* conn,
                                      param_formats, result_format,
                                      timeout_ms);
     }
-
-    native_pool_free_result_chain(conn);
-
-    const Oid* types_oid = NULL;
-    if (n_params > 0 && param_types != NULL) {
-        types_oid = (const Oid*)param_types;  // same width, see execute_single_params
-    }
-
-    for (int attempt = 0; ; attempt++) {
-        // A retry runs without the prefixes: they already ran, and their
-        // results are already in the chain.
-        char* const* pfx = (attempt == 0) ? prefixes : NULL;
-        int32_t npfx = (attempt == 0) ? n_prefix : 0;
-
-#if !STMT_USE_CLOSE
-        if (c->n_pending > 0 &&
-            PQtransactionStatus(conn->pg) == PQTRANS_INTRANS) {
-            if (!flush_closes_in_transaction(conn, timeout_ms)) {
-                native_pool_free_result_chain(conn);
-                return WORKER_PORT_ABORTED;
-            }
-        }
-#endif
-        stmt_entry_t* e = stmt_cache_lookup(c, sql, n_params, param_types);
-        char fresh[STMT_NAME_LEN];
-        const char* name = NULL;  // unnamed while the cache is off
-        if (e != NULL) {
-            name = e->name;
-        } else if (c->capacity > 0) {
-            stmt_cache_next_name(c, fresh);
-            name = fresh;
-        }
-        int flush = c->n_pending > 0 && pending_close_allowed(conn->pg);
-
-        int prepared_ok = 0;
-        int64_t status = cached_pipeline(conn, pfx, npfx, flush, name,
-                                         e == NULL, sql, n_params, types_oid,
-                                         param_values, param_lengths,
-                                         param_formats, result_format,
-                                         timeout_ms, &prepared_ok);
-        if (prepared_ok) stmt_cache_insert(c, sql, n_params, param_types, fresh);
-        if (status != WORKER_PORT_OK) return status;
-
-        // The query's result is the last of the chain.
-        PGresult* q = (conn->chain_tail != NULL) ? conn->chain_tail->result
-                                                 : NULL;
-        const char* state = (q != NULL)
-            ? PQresultErrorField(q, PG_DIAG_SQLSTATE) : NULL;
-        int retry = 0;
-        if (e != NULL && is_missing_statement(state)) {
-            stmt_cache_remove(c, e, 0);  // gone: nothing to close
-            retry = 1;
-        } else if (e != NULL && is_stale_plan(q, state)) {
-            stmt_cache_remove(c, e, 1);  // still on the server: close it
-            retry = 1;
-        } else if (e == NULL && name != NULL && state != NULL &&
-                   strcmp(state, "42P05") == 0) {
-            retry = 1;  // name taken by the caller's own PREPARE
-        }
-        // Inside a transaction the error already aborted it: hand it back.
-        if (!retry || attempt > 0 ||
-            PQtransactionStatus(conn->pg) != PQTRANS_IDLE) {
-            return WORKER_PORT_OK;
-        }
-        chain_drop_tail(conn);
-    }
+    // The one-statement case of a cached batch (ABI MINOR 8 generalised the
+    // MINOR 7 path; `pool_submit_query_cached` keeps its contract).
+    char* const sqls[1] = {(char*)sql};
+    const int32_t counts[1] = {n_params};
+    return execute_batch(conn, prefixes, n_prefix, 1, sqls, counts,
+                         param_types, param_values, param_lengths,
+                         param_formats, result_format, 1, timeout_ms);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1549,6 +1694,9 @@ void* native_pool_worker_main(void* arg) {
         int is_params = conn->is_params;
         int is_multi_read = conn->is_multi_read;
         int is_cached = conn->is_cached;
+        int32_t n_batch = conn->n_batch;
+        const int32_t* batch_counts = conn->batch_n_params;
+        int batch_cached = conn->batch_cached;
         int32_t n_prefix = conn->n_prefix;
         int32_t sql_count = conn->sql_count;
         int64_t port_id = conn->port_id;
@@ -1563,7 +1711,7 @@ void* native_pool_worker_main(void* arg) {
         int result_format = conn->result_format;
         pthread_mutex_unlock(&conn->slot_mutex);
 
-        // ── 2. Execute (one of six paths) ──
+        // ── 2. Execute (one of seven paths) ──
         //
         // ABI MINOR 3: a slot handed out while convalescing gets one
         // reset attempt before it runs anything. `pool_acquire` only
@@ -1575,7 +1723,13 @@ void* native_pool_worker_main(void* arg) {
             status = WORKER_PORT_CONN_LOST;
             goto notify;
         }
-        if (is_cached) {
+        if (n_batch > 0) {
+            status = execute_batch(conn, sql, n_prefix, n_batch,
+                                   sql + n_prefix, batch_counts,
+                                   param_types_snap, param_vals_snap,
+                                   param_lens_snap, param_fmts_snap,
+                                   result_format, batch_cached, timeout_ms);
+        } else if (is_cached) {
             status = execute_cached(conn, sql, n_prefix, sql[n_prefix],
                                     n_params,
                                     param_types_snap,

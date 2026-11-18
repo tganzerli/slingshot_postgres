@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the prepared-statement cache suite against a build with
+# Runs the statement cache and batch suites against a build with
 # SLINGSHOT_NO_CLOSE_PREPARED: the DEALLOCATE fallback that a libpq older than
 # 17 (no PQsendClosePrepared) takes. The default build on a libpq >= 17 host
 # never exercises it. Needs the dev Postgres, like the suite itself.
@@ -21,4 +21,5 @@ if grep -q PQsendClosePrepared <<<"$syms"; then
   echo "fallback build still calls PQsendClosePrepared" >&2
   exit 1
 fi
-DART_DB_CONNECTOR_NATIVE_LIB_PATH="$lib" dart test test/prepared_statement_cache_test.dart "$@"
+DART_DB_CONNECTOR_NATIVE_LIB_PATH="$lib" dart test test/prepared_statement_cache_test.dart \
+  test/batch_test.dart "$@"

@@ -59,4 +59,8 @@ const int kExpectedAbiMajor = 2;
 /// through a per-connection LRU of named prepared statements),
 /// `pool_set_statement_cache_capacity` and `get_error_sqlstate`. Existing
 /// symbols unchanged.
-const int kExpectedAbiMinor = 7;
+///
+/// 7 → 8 in 2026-11-16: added `pool_submit_batch` (N Extended queries with
+/// their own params in one pipeline, through the statement cache when asked).
+/// Existing symbols unchanged.
+const int kExpectedAbiMinor = 8;

@@ -413,6 +413,51 @@ int pool_submit_query_cached(
     int64_t timeout_ms
 );
 
+/// ABI MINOR 8 — `n_queries` Extended queries, each with its own
+/// parameters, in ONE libpq pipeline under ONE Sync, after the optional
+/// prefixes (each one statement, no params): one round-trip for several
+/// independent reads.
+///
+/// Parameters are flat: query i takes the next `n_params[i]` entries of
+/// `param_types`/`param_values`/`param_lengths`/`param_formats`, in query
+/// order (the arrays hold the sum of `n_params`). One `result_format` for
+/// every query. With `cached` != 0 and the statement cache on
+/// (`pool_set_statement_cache_capacity`), every query goes through it,
+/// exactly as `pool_submit_query_cached` does for one: prepared on a miss in
+/// the same pipeline, closed when evicted, re-prepared on a stale statement.
+/// Otherwise every query is sent unnamed.
+///
+/// Delivery: via `poll_result`, one result per prefix, then one per query,
+/// in order. The first failing statement aborts every later one
+/// (`PGRES_PIPELINE_ABORTED`); when a Prepare fails, its error takes its
+/// query's place. No ROLLBACK here: a transaction the caller (or a prefix)
+/// opened stays open, aborted on error, and belongs to the caller. A stale
+/// cached statement outside a transaction re-runs the whole batch once
+/// (without the prefixes, which already ran): outside an explicit
+/// transaction the pipeline runs as one implicit transaction, which the
+/// error rolled back. A timeout cancels and drains to the Sync; a batch
+/// that cannot be ended cleanly gives the session up (port code 3).
+///
+/// Returns 1 on dispatch success, 0 if the slot is occupied, an argument
+/// is invalid (`n_queries` < 1, a NULL statement, a negative count) or an
+/// allocation failed.
+int pool_submit_batch(
+    native_conn_t* conn,
+    const char* const* prefix_sqls,
+    int32_t n_prefix,
+    int32_t n_queries,
+    const char* const* sqls,
+    const int32_t* n_params,
+    const int32_t* param_types,
+    const char* const* param_values,
+    const int* param_lengths,
+    const int* param_formats,
+    int result_format,
+    int32_t cached,
+    int64_t port_id,
+    int64_t timeout_ms
+);
+
 /// ABI MINOR 6 — the connection's `PQtransactionStatus`:
 /// 0 IDLE, 1 ACTIVE, 2 INTRANS, 3 INERROR, 4 UNKNOWN (also for NULL).
 ///

@@ -17,6 +17,7 @@ import 'package:meta/meta.dart';
 import '../bindings/postgres_binding.dart';
 import '../decoder/postgres_result_row.dart';
 import '../native/postgres_native_pool.dart' show WorkerPortCode;
+import 'batch.dart';
 import 'param.dart';
 import 'query_phase_diagnostics.dart';
 import 'session_reset.dart';
@@ -55,7 +56,8 @@ abstract interface class PostgresQueryExecutorContract {
   });
 }
 
-class PostgresQueryExecutor implements PostgresQueryExecutorContract {
+class PostgresQueryExecutor
+    implements PostgresQueryExecutorContract, PostgresBatchExecutor {
   final PostgresBinding _binding;
   final ffi.Pointer<ffi.Void> _conn;
   final Duration? _timeout;
@@ -160,6 +162,12 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// it exercises the fallback taken with an older library.
   @visibleForTesting
   static bool debugForceStandaloneReset = false;
+
+  /// Forces the sequential fallback of [executeBatch] even when the linked
+  /// library offers `pool_submit_batch` (ABI MINOR 8). Tests only: it
+  /// exercises the path taken with an older library.
+  @visibleForTesting
+  static bool debugForceSequentialBatch = false;
 
   /// ABI MINOR 7: whether the Extended path runs its statements through
   /// the connection's cache of prepared statements
@@ -672,6 +680,175 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
       if (extra == ffi.nullptr) break;
       _binding.clearResult(extra);
     }
+  }
+
+  /// Runs [queries], each with its own parameters, in ONE network
+  /// round-trip (ABI MINOR 8, `pool_submit_batch`) and returns one result set
+  /// per query, in order. See [PostgresBatchExecutor.executeBatch] for the
+  /// contract.
+  ///
+  /// Unlike [executeMultiRead], values travel as Extended Protocol
+  /// parameters (safe for external input, binary results available) and,
+  /// with the statement cache on, every statement is a cached prepared
+  /// statement. A pending BEGIN or session reset rides the same round-trip.
+  /// With a native library older than MINOR 8 the statements run one after
+  /// the other through [execute]: same results, no round-trip saving.
+  @override
+  Future<List<PostgresResultSet>> executeBatch(List<PgBatchQuery> queries,
+      {bool binaryResult = false}) async {
+    _refuseIfLost();
+    final submit = debugForceSequentialBatch ? null : _binding.poolSubmitBatch;
+    if (submit == null) {
+      final out = <PostgresResultSet>[];
+      try {
+        for (final q in queries) {
+          out.add(await execute(q.sql,
+              params: q.params, binaryResult: binaryResult));
+        }
+      } catch (_) {
+        for (final rs in out) {
+          rs.release();
+        }
+        rethrow;
+      }
+      return out;
+    }
+    final reset = _takeReset();
+    if (queries.isEmpty) {
+      if (reset) await _standaloneReset();
+      // As in executeMultiRead: a deferred BEGIN still opens the
+      // transaction the caller will end.
+      if (_pendingBegin) {
+        _pendingBegin = false;
+        (await _executeSimple('BEGIN')).release();
+      }
+      return const [];
+    }
+    final begin = _pendingBegin;
+    _pendingBegin = false;
+    final prefixes = [if (reset) ..._resetPrefix, if (begin) 'BEGIN'];
+    final n = queries.length;
+    final marshalled = <MarshalledParams>[];
+    final allocated = <ffi.Pointer<Utf8>>[];
+    final prefixVec =
+        prefixes.isEmpty ? null : malloc<ffi.Pointer<Utf8>>(prefixes.length);
+    final sqlVec = malloc<ffi.Pointer<Utf8>>(n);
+    final counts = malloc<ffi.Int32>(n);
+    ffi.Pointer<ffi.Int32> types = ffi.nullptr;
+    ffi.Pointer<ffi.Pointer<ffi.Uint8>> values = ffi.nullptr;
+    ffi.Pointer<ffi.Int32> lengths = ffi.nullptr;
+    ffi.Pointer<ffi.Int32> formats = ffi.nullptr;
+    final port = ReceivePort();
+    final timeoutMs = _timeout?.inMilliseconds ?? 0;
+    int portCode;
+    try {
+      for (var i = 0; i < prefixes.length; i++) {
+        final p = prefixes[i].toNativeUtf8();
+        allocated.add(p);
+        prefixVec![i] = p;
+      }
+      var total = 0;
+      for (var i = 0; i < n; i++) {
+        final m = marshalParams(queries[i].params);
+        marshalled.add(m);
+        counts[i] = m.count;
+        total += m.count;
+        final p = queries[i].sql.toNativeUtf8();
+        allocated.add(p);
+        sqlVec[i] = p;
+      }
+      if (total > 0) {
+        types = malloc<ffi.Int32>(total);
+        values = malloc<ffi.Pointer<ffi.Uint8>>(total);
+        lengths = malloc<ffi.Int32>(total);
+        formats = malloc<ffi.Int32>(total);
+        var k = 0;
+        for (final m in marshalled) {
+          for (var j = 0; j < m.count; j++, k++) {
+            types[k] = m.types[j];
+            values[k] = m.values[j];
+            lengths[k] = m.lengths[j];
+            formats[k] = m.formats[j];
+          }
+        }
+      }
+      final status = submit(
+        _conn,
+        prefixVec ?? ffi.nullptr,
+        prefixes.length,
+        n,
+        sqlVec,
+        counts,
+        types,
+        values,
+        lengths,
+        formats,
+        binaryResult ? 1 : 0,
+        _statementCache ? 1 : 0,
+        port.sendPort.nativePort,
+        timeoutMs,
+      );
+      if (status != 1) {
+        throw QueryFailedException(
+            queries.first.sql, 'libpq refused to send query (batch)');
+      }
+      portCode = await port.first as int;
+    } finally {
+      // The C side dup-copied everything before the submit returned.
+      for (final p in allocated) {
+        malloc.free(p);
+      }
+      if (prefixVec != null) malloc.free(prefixVec);
+      malloc.free(sqlVec);
+      malloc.free(counts);
+      if (types != ffi.nullptr) malloc.free(types);
+      if (values != ffi.nullptr) malloc.free(values);
+      if (lengths != ffi.nullptr) malloc.free(lengths);
+      if (formats != ffi.nullptr) malloc.free(formats);
+      for (final m in marshalled) {
+        freeMarshalledParams(m);
+      }
+      port.close();
+    }
+    _checkPortCode(portCode, queries.first.sql,
+        'batch aborted (dispatch error or shutdown)');
+    if ((reset || begin) &&
+        !_consumePrefixResults(reset: reset, begin: begin)) {
+      await _recoverFailedReset();
+      _pendingBegin = begin;
+      return executeBatch(queries, binaryResult: binaryResult);
+    }
+
+    final out = <PostgresResultSet>[];
+    for (var i = 0; i < n; i++) {
+      final r = _binding.pollResult(_conn);
+      if (r == ffi.nullptr) break;
+      final status = _binding.getResultStatus(r);
+      if (PgExecStatus.isError(status)) {
+        var msg = _binding.getErrorMessage(r).toDartString();
+        final state = _binding.getErrorSqlstate?.call(r);
+        if (state != null && state != ffi.nullptr) {
+          msg = '${msg.trimRight()} [SQLSTATE ${state.toDartString()}]';
+        }
+        _binding.clearResult(r);
+        _drainRemaining();
+        for (final rs in out) {
+          rs.release();
+        }
+        throw QueryFailedException(
+            queries[i].sql, msg.isEmpty ? 'query failed' : msg);
+      }
+      out.add(PostgresResultSet.fromResult(_binding, r, binary: binaryResult));
+    }
+    _drainRemaining();
+    if (out.length != n) {
+      for (final rs in out) {
+        rs.release();
+      }
+      throw QueryFailedException(
+          queries.first.sql, 'batch returned ${out.length} of $n results');
+    }
+    return out;
   }
 
   /// Runs [reads] in a SINGLE network round-trip (ABI MINOR 2),

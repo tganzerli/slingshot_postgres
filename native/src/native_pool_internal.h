@@ -46,6 +46,11 @@ struct native_conn {
     int is_multi_read;             // ABI MINOR 2: 1 = multi-statement, chain results
     int is_cached;                 // ABI MINOR 7: 1 = params query through `stmts`
                                    // (n_prefix may be 0); implies is_params
+    int32_t n_batch;               // ABI MINOR 8: > 0 = batch of n_batch queries at
+                                   // sql[n_prefix..]; implies is_params. The flat
+                                   // param arrays hold every query's params in order.
+    int32_t* batch_n_params;       // owned, length n_batch (params of each query)
+    int batch_cached;              // ABI MINOR 8: batch goes through `stmts`
     int32_t n_prefix;              // ABI MINOR 5/6: > 0 = sql[0..n_prefix-1] prefixes
                                    // + sql[n_prefix] params query
     char** sql;                    // heap-allocated copy; sql[0..count-1]

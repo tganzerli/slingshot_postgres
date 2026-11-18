@@ -75,6 +75,7 @@ export 'package:slingshot/slingshot.dart'
         UnitOfWork;
 export 'src/postgres/postgres_query_executor.dart'
     show PostgresQueryExecutorContract;
+export 'src/postgres/batch.dart' show PgBatchQuery, PostgresBatchExecutor;
 export 'src/postgres/postgres_unit_of_work.dart' show PostgresUnitOfWork;
 export 'src/postgres/postgres_repository.dart' show PostgresRepository;
 export 'src/postgres/param.dart' show Param, SqlStmt;

@@ -26,6 +26,7 @@ pool_create_with_error
 pool_destroy
 pool_release
 pool_set_statement_cache_capacity
+pool_submit_batch
 pool_submit_multi_read
 pool_submit_pipeline
 pool_submit_query

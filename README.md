@@ -94,7 +94,7 @@ MySQL, MongoDB and SQLite drivers exist in the project and are not published yet
 
 ## Status
 
-Experimental (pre-1.0). Native ABI `MAJOR 2 / MINOR 6`.
+Experimental (pre-1.0). Native ABI `MAJOR 2 / MINOR 8`.
 
 ## API in detail
 
@@ -140,6 +140,13 @@ Experimental (pre-1.0). Native ABI `MAJOR 2 / MINOR 6`.
   `QueryTimeoutException`; the connection and its session stay usable. When the session cannot be ended cleanly
   (the deadline hit before the statement was fully sent, or the server ignored the cancel for 5 s), the connection
   is reconnected and the statement is reported as `ConnectionLostException`; a statement not fully sent never runs.
+- **Batches.** `executeBatch` sends several independent statements, each with its own parameters
+  (`PgBatchQuery`), in one network round-trip and returns one result set per statement, in order; with the
+  statement cache on, every statement goes through it. The first failing statement aborts the rest and is named
+  in the `QueryFailedException`; a transaction around the batch stays open for its owner. The capability is the
+  `PostgresBatchExecutor` interface, so an executor that wraps another implements it and forwards to keep the
+  saving. With a native library older than ABI MINOR 8 the statements run one after the other, with the same
+  results.
 - **Transactions:** `withTransaction`, `withTransactionOn`, `withPipelinedTransaction` (libpq pipeline mode
   for bulk writes), `withTransactionInstrumented` with `TxDiagnostics`, and `withPostgresConnection` for
   autocommit work on one borrowed connection.

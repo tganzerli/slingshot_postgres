@@ -4,6 +4,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.14
+
+### Added
+
+- `executeBatch` on `PostgresQueryExecutor`: several independent statements, each with its own parameters, in ONE
+  network round-trip (`PgBatchQuery`), returning one result set per statement, in order. Values travel as Extended
+  Protocol parameters (binary results available), a pending BEGIN or session reset rides the same round-trip, and
+  with `PoolConfig.statementCacheSize` > 0 every statement goes through the statement cache. The first failing
+  statement aborts the rest and is named in the `QueryFailedException` (with its SQLSTATE on the native path); a transaction around
+  the batch is left to its owner. A stale cached statement outside a transaction re-runs the batch once.
+- `PostgresBatchExecutor`: the capability as an interface of its own, so wrapping executors keep compiling; a
+  wrapper implements it and forwards to get the round-trip saving.
+- Native ABI MINOR 8: `pool_submit_batch`. With an older native library `executeBatch` runs the statements one
+  after the other, with the same results.
+
 ## 0.1.13
 
 ### Added

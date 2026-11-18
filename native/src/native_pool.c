@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -77,6 +78,9 @@ void native_pool_free_slot_payload(native_conn_t* conn) {
     conn->is_params = 0;
     conn->is_multi_read = 0;
     conn->is_cached = 0;
+    free(conn->batch_n_params); conn->batch_n_params = NULL;
+    conn->n_batch = 0;
+    conn->batch_cached = 0;
     conn->n_prefix = 0;
     conn->result_format = 0;
 
@@ -137,6 +141,9 @@ static int init_conn(native_conn_t* conn,
     conn->is_params = 0;
     conn->is_multi_read = 0;
     conn->is_cached = 0;
+    conn->n_batch = 0;
+    conn->batch_n_params = NULL;
+    conn->batch_cached = 0;
     conn->n_prefix = 0;
     conn->sql = NULL;
     conn->sql_count = 0;
@@ -509,6 +516,56 @@ int pool_submit_multi_read(native_conn_t* conn,
     return submit_locked(conn, 0, 1, queries, query_count, port_id, timeout_ms);
 }
 
+// Duplicates an Extended Protocol params payload so the Dart side can free
+// its FFI buffers as soon as the submit returns. Text values are copied up
+// to their NUL, binary ones by `param_lengths[i]`; a NULL value (SQL NULL)
+// stays NULL; NULL `param_types` means "let the server infer" (zeros).
+// Returns 1 and the owned copies, or 0 with nothing allocated.
+static int copy_params(int32_t n_params,
+                       const int32_t* param_types,
+                       const char* const* param_values,
+                       const int* param_lengths,
+                       const int* param_formats,
+                       int32_t** types_out, char*** values_out,
+                       int** lengths_out, int** formats_out) {
+    *types_out = NULL; *values_out = NULL;
+    *lengths_out = NULL; *formats_out = NULL;
+    if (n_params <= 0) return 1;
+    int32_t* types_copy  = (int32_t*)calloc((size_t)n_params, sizeof(int32_t));
+    int*     lengths_copy = (int*)calloc((size_t)n_params, sizeof(int));
+    int*     formats_copy = (int*)calloc((size_t)n_params, sizeof(int));
+    char**   values_copy  = (char**)calloc((size_t)n_params, sizeof(char*));
+    if (types_copy == NULL || lengths_copy == NULL
+        || formats_copy == NULL || values_copy == NULL) {
+        free(types_copy); free(lengths_copy);
+        free(formats_copy); free(values_copy);
+        return 0;
+    }
+    if (param_types != NULL) {
+        memcpy(types_copy, param_types, (size_t)n_params * sizeof(int32_t));
+    }
+    memcpy(lengths_copy, param_lengths, (size_t)n_params * sizeof(int));
+    memcpy(formats_copy, param_formats, (size_t)n_params * sizeof(int));
+    for (int32_t i = 0; i < n_params; i++) {
+        if (param_values[i] == NULL) continue;
+        size_t blen = (formats_copy[i] == 0)
+            ? strlen(param_values[i]) + 1     // text: NUL-terminated
+            : (size_t)lengths_copy[i];        // binary: explicit
+        char* buf = (char*)malloc(blen > 0 ? blen : 1);
+        if (buf == NULL) {
+            for (int32_t j = 0; j < i; j++) free(values_copy[j]);
+            free(values_copy); free(formats_copy);
+            free(lengths_copy); free(types_copy);
+            return 0;
+        }
+        memcpy(buf, param_values[i], blen);
+        values_copy[i] = buf;
+    }
+    *types_out = types_copy; *values_out = values_copy;
+    *lengths_out = lengths_copy; *formats_out = formats_copy;
+    return 1;
+}
+
 // ABI MINOR 1 — Extended Query Protocol single-statement dispatch.
 // Mirrors `submit_locked` shape but ferries the params payload in
 // addition to the SQL string. On any allocation failure mid-way we
@@ -572,63 +629,16 @@ static int submit_params_locked(native_conn_t* conn,
         return 0;
     }
 
-    // Dup the params. We dup each value buffer so the Dart side can
-    // free its FFI-allocated buffers immediately after the call
-    // returns, mirroring how `dup_string(sql)` decouples lifetimes.
     int32_t* types_copy   = NULL;
     char**   values_copy  = NULL;
     int*     lengths_copy = NULL;
     int*     formats_copy = NULL;
-
-    if (n_params > 0) {
-        // Types: array of Oids, NULL is acceptable (server inference);
-        // but we always allocate so worker sees a stable pointer.
-        types_copy = (int32_t*)calloc((size_t)n_params, sizeof(int32_t));
-        lengths_copy = (int*)calloc((size_t)n_params, sizeof(int));
-        formats_copy = (int*)calloc((size_t)n_params, sizeof(int));
-        values_copy = (char**)calloc((size_t)n_params, sizeof(char*));
-        if (types_copy == NULL || lengths_copy == NULL
-            || formats_copy == NULL || values_copy == NULL) {
-            free(types_copy); free(lengths_copy);
-            free(formats_copy); free(values_copy);
-            free_sql_vec(sql_vec, sql_count);
-            pthread_mutex_unlock(&conn->slot_mutex);
-            return 0;
-        }
-        if (param_types != NULL) {
-            memcpy(types_copy, param_types,
-                   (size_t)n_params * sizeof(int32_t));
-        }
-        memcpy(lengths_copy, param_lengths,
-               (size_t)n_params * sizeof(int));
-        memcpy(formats_copy, param_formats,
-               (size_t)n_params * sizeof(int));
-
-        // Each value buffer needs to be duped at the appropriate
-        // length. Text params come as NUL-terminated UTF-8 (length
-        // ignored by libpq for text); binary params come with
-        // explicit `param_lengths[i]`. NULL value (SQL NULL) stays
-        // NULL in the copy.
-        for (int32_t i = 0; i < n_params; i++) {
-            if (param_values[i] == NULL) {
-                values_copy[i] = NULL;
-                continue;
-            }
-            size_t blen = (formats_copy[i] == 0)
-                ? strlen(param_values[i]) + 1     // text: NUL-terminated
-                : (size_t)lengths_copy[i];        // binary: explicit
-            char* buf = (char*)malloc(blen);
-            if (buf == NULL) {
-                for (int32_t j = 0; j < i; j++) free(values_copy[j]);
-                free(values_copy); free(formats_copy);
-                free(lengths_copy); free(types_copy);
-                free_sql_vec(sql_vec, sql_count);
-                pthread_mutex_unlock(&conn->slot_mutex);
-                return 0;
-            }
-            memcpy(buf, param_values[i], blen);
-            values_copy[i] = buf;
-        }
+    if (!copy_params(n_params, param_types, param_values, param_lengths,
+                     param_formats, &types_copy, &values_copy, &lengths_copy,
+                     &formats_copy)) {
+        free_sql_vec(sql_vec, sql_count);
+        pthread_mutex_unlock(&conn->slot_mutex);
+        return 0;
     }
 
     // Commit to the slot.
@@ -724,6 +734,97 @@ int pool_submit_query_cached(native_conn_t* conn,
                                 param_types, param_values, param_lengths,
                                 param_formats, result_format, port_id,
                                 timeout_ms);
+}
+
+// ABI MINOR 8. See `native_pool.h` for the contract.
+int pool_submit_batch(native_conn_t* conn,
+                      const char* const* prefix_sqls,
+                      int32_t n_prefix,
+                      int32_t n_queries,
+                      const char* const* sqls,
+                      const int32_t* n_params,
+                      const int32_t* param_types,
+                      const char* const* param_values,
+                      const int* param_lengths,
+                      const int* param_formats,
+                      int result_format,
+                      int32_t cached,
+                      int64_t port_id,
+                      int64_t timeout_ms) {
+    if (conn == NULL || sqls == NULL || n_params == NULL) return 0;
+    if (n_queries < 1 || n_prefix < 0) return 0;
+    if (n_prefix > 0 && prefix_sqls == NULL) return 0;
+    for (int32_t i = 0; i < n_prefix; i++) {
+        if (prefix_sqls[i] == NULL) return 0;
+    }
+    int64_t total = 0;
+    for (int32_t i = 0; i < n_queries; i++) {
+        if (sqls[i] == NULL || n_params[i] < 0) return 0;
+        total += n_params[i];
+    }
+    if (total > INT32_MAX) return 0;
+    if (total > 0 && (param_values == NULL || param_lengths == NULL
+                      || param_formats == NULL)) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&conn->slot_mutex);
+    if (conn->slot_filled || atomic_load(&conn->shutdown_requested)) {
+        pthread_mutex_unlock(&conn->slot_mutex);
+        return 0;
+    }
+
+    int32_t sql_count = n_prefix + n_queries;
+    char** sql_vec = (char**)calloc((size_t)sql_count, sizeof(char*));
+    int32_t* counts = (int32_t*)malloc((size_t)n_queries * sizeof(int32_t));
+    int ok = (sql_vec != NULL && counts != NULL);
+    for (int32_t i = 0; ok && i < n_prefix; i++) {
+        sql_vec[i] = dup_string(prefix_sqls[i]);
+        ok = (sql_vec[i] != NULL);
+    }
+    for (int32_t i = 0; ok && i < n_queries; i++) {
+        sql_vec[n_prefix + i] = dup_string(sqls[i]);
+        ok = (sql_vec[n_prefix + i] != NULL);
+    }
+    int32_t* types_copy = NULL;
+    char** values_copy = NULL;
+    int* lengths_copy = NULL;
+    int* formats_copy = NULL;
+    if (ok) {
+        memcpy(counts, n_params, (size_t)n_queries * sizeof(int32_t));
+        ok = copy_params((int32_t)total, param_types, param_values,
+                         param_lengths, param_formats, &types_copy,
+                         &values_copy, &lengths_copy, &formats_copy);
+    }
+    if (!ok) {
+        free(counts);
+        free_sql_vec(sql_vec, sql_count);
+        pthread_mutex_unlock(&conn->slot_mutex);
+        return 0;
+    }
+
+    conn->slot_filled    = 1;
+    conn->is_pipeline    = 0;
+    conn->is_params      = 1;
+    conn->is_cached      = 0;
+    conn->n_batch        = n_queries;
+    conn->batch_n_params = counts;
+    conn->batch_cached   = cached ? 1 : 0;
+    conn->n_prefix       = n_prefix;
+    conn->sql            = sql_vec;
+    conn->sql_count      = sql_count;
+    conn->n_params       = (int32_t)total;
+    conn->param_types    = types_copy;
+    conn->param_values   = values_copy;
+    conn->param_lengths  = lengths_copy;
+    conn->param_formats  = formats_copy;
+    conn->result_format  = result_format;
+    conn->port_id        = port_id;
+    conn->timeout_ms     = timeout_ms;
+
+    pthread_cond_signal(&conn->slot_cond);
+    pthread_mutex_unlock(&conn->slot_mutex);
+    return 1;
 }
 
 // ABI MINOR 7. See `native_pool.h` for the contract.

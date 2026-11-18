@@ -235,6 +235,38 @@ typedef _PoolSetStatementCacheCapacityNative = ffi.Void Function(
     ffi.Pointer<ffi.Void>, ffi.Int32);
 typedef _PoolSetStatementCacheCapacityDart = void Function(
     ffi.Pointer<ffi.Void>, int);
+// ── ABI MINOR 8 (2026-11-16): batch of Extended queries ──
+typedef _PoolSubmitBatchNative = ffi.Int32 Function(
+    ffi.Pointer<ffi.Void>, // conn
+    ffi.Pointer<ffi.Pointer<Utf8>>, // prefix_sqls
+    ffi.Int32, // n_prefix
+    ffi.Int32, // n_queries
+    ffi.Pointer<ffi.Pointer<Utf8>>, // sqls
+    ffi.Pointer<ffi.Int32>, // n_params (per query)
+    ffi.Pointer<ffi.Int32>, // param_types (flat)
+    ffi.Pointer<ffi.Pointer<ffi.Uint8>>, // param_values (flat)
+    ffi.Pointer<ffi.Int32>, // param_lengths (flat)
+    ffi.Pointer<ffi.Int32>, // param_formats (flat)
+    ffi.Int32, // result_format
+    ffi.Int32, // cached
+    ffi.Int64, // port_id
+    ffi.Int64); // timeout_ms
+typedef _PoolSubmitBatchDart = int Function(
+    ffi.Pointer<ffi.Void>,
+    ffi.Pointer<ffi.Pointer<Utf8>>,
+    int,
+    int,
+    ffi.Pointer<ffi.Pointer<Utf8>>,
+    ffi.Pointer<ffi.Int32>,
+    ffi.Pointer<ffi.Int32>,
+    ffi.Pointer<ffi.Pointer<ffi.Uint8>>,
+    ffi.Pointer<ffi.Int32>,
+    ffi.Pointer<ffi.Int32>,
+    int,
+    int,
+    int,
+    int);
+
 typedef _GetErrorSqlstateNative = ffi.Pointer<Utf8> Function(
     ffi.Pointer<ffi.Void>);
 typedef _GetErrorSqlstateDart = ffi.Pointer<Utf8> Function(
@@ -533,6 +565,27 @@ class PostgresBinding {
   final ffi.Pointer<Utf8> Function(ffi.Pointer<ffi.Void> result)?
       getErrorSqlstate;
 
+  /// ABI MINOR 8: `nQueries` Extended queries, each with its own params
+  /// (flat arrays, `nParams[i]` entries per query, in order), in one
+  /// pipeline under one Sync after the prefixes; through the statement cache
+  /// when `cached` is 1. One result per prefix, then one per query. See
+  /// `pool_submit_batch` in `native_pool.h`. `null` before MINOR 8.
+  final int Function(
+      ffi.Pointer<ffi.Void> conn,
+      ffi.Pointer<ffi.Pointer<Utf8>> prefixSqls,
+      int nPrefix,
+      int nQueries,
+      ffi.Pointer<ffi.Pointer<Utf8>> sqls,
+      ffi.Pointer<ffi.Int32> nParams,
+      ffi.Pointer<ffi.Int32> paramTypes,
+      ffi.Pointer<ffi.Pointer<ffi.Uint8>> paramValues,
+      ffi.Pointer<ffi.Int32> paramLengths,
+      ffi.Pointer<ffi.Int32> paramFormats,
+      int resultFormat,
+      int cached,
+      int portId,
+      int timeoutMs)? poolSubmitBatch;
+
   /// Sends a libpq CancelRequest for any in-flight query on `conn`.
   /// Fire-and-forget. Thread-safe. Idempotent on idle.
   ///
@@ -617,6 +670,7 @@ class PostgresBinding {
     this.poolSubmitQueryCached,
     this.poolSetStatementCacheCapacity,
     this.getErrorSqlstate,
+    this.poolSubmitBatch,
   });
 
   factory PostgresBinding(ffi.DynamicLibrary lib) {
@@ -687,6 +741,11 @@ class PostgresBinding {
                       _PoolSetStatementCacheCapacityDart>(
                   'pool_set_statement_cache_capacity')
               : null,
+      // Looked up only if present, so a MINOR 7 library still loads.
+      poolSubmitBatch: lib.providesSymbol('pool_submit_batch')
+          ? lib.lookupFunction<_PoolSubmitBatchNative, _PoolSubmitBatchDart>(
+              'pool_submit_batch')
+          : null,
       getErrorSqlstate: lib.providesSymbol('get_error_sqlstate')
           ? lib.lookupFunction<_GetErrorSqlstateNative, _GetErrorSqlstateDart>(
               'get_error_sqlstate')
