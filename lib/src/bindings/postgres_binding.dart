@@ -224,6 +224,22 @@ typedef _PoolConnTransactionStatusNative = ffi.Int32 Function(
     ffi.Pointer<ffi.Void>);
 typedef _PoolConnTransactionStatusDart = int Function(ffi.Pointer<ffi.Void>);
 
+// ── ABI MINOR 7 (2026-11-16): prepared-statement cache ──
+//
+// The query of `pool_submit_query_cached` runs as a named prepared
+// statement kept in a per-connection LRU; same arguments and delivery as
+// `pool_submit_query_params_prefixed_n`, with `n_prefix` allowed to be 0.
+typedef _PoolSubmitQueryCachedNative = _PoolSubmitQueryParamsPrefixedNNative;
+typedef _PoolSubmitQueryCachedDart = _PoolSubmitQueryParamsPrefixedNDart;
+typedef _PoolSetStatementCacheCapacityNative = ffi.Void Function(
+    ffi.Pointer<ffi.Void>, ffi.Int32);
+typedef _PoolSetStatementCacheCapacityDart = void Function(
+    ffi.Pointer<ffi.Void>, int);
+typedef _GetErrorSqlstateNative = ffi.Pointer<Utf8> Function(
+    ffi.Pointer<ffi.Void>);
+typedef _GetErrorSqlstateDart = ffi.Pointer<Utf8> Function(
+    ffi.Pointer<ffi.Void>);
+
 // ── ABI MINOR 2 (2026-07-28): multi-read ──
 //
 // `pool_submit_multi_read` mirrors `pool_submit_pipeline`'s shape (an
@@ -484,6 +500,39 @@ class PostgresBinding {
   /// [PgTransactionStatus]. `null` when the library predates MINOR 6.
   final int Function(ffi.Pointer<ffi.Void> conn)? poolConnTransactionStatus;
 
+  /// ABI MINOR 7: [poolSubmitQueryParamsPrefixedN] (with `nPrefix` 0
+  /// allowed) whose query goes through the connection's cache of named
+  /// prepared statements: prepared on the first use of the SQL on that
+  /// connection, reused afterwards, re-prepared once on a stale statement
+  /// outside a transaction. Same delivery: one result per prefix, then
+  /// the query's. See `pool_submit_query_cached` in `native_pool.h`.
+  ///
+  /// `null` when the linked library predates MINOR 7.
+  final int Function(
+      ffi.Pointer<ffi.Void> conn,
+      ffi.Pointer<ffi.Pointer<Utf8>> prefixSqls,
+      int nPrefix,
+      ffi.Pointer<Utf8> sql,
+      int nParams,
+      ffi.Pointer<ffi.Int32> paramTypes,
+      ffi.Pointer<ffi.Pointer<ffi.Uint8>> paramValues,
+      ffi.Pointer<ffi.Int32> paramLengths,
+      ffi.Pointer<ffi.Int32> paramFormats,
+      int resultFormat,
+      int portId,
+      int timeoutMs)? poolSubmitQueryCached;
+
+  /// ABI MINOR 7: per-connection capacity of the statement cache used by
+  /// [poolSubmitQueryCached]; 0 disables it. `null` before MINOR 7.
+  final void Function(ffi.Pointer<ffi.Void> pool, int capacity)?
+      poolSetStatementCacheCapacity;
+
+  /// ABI MINOR 7: the SQLSTATE of a result, or `nullptr` when it has
+  /// none. Pointer valid until [clearResult]; DO NOT free. `null` before
+  /// MINOR 7.
+  final ffi.Pointer<Utf8> Function(ffi.Pointer<ffi.Void> result)?
+      getErrorSqlstate;
+
   /// Sends a libpq CancelRequest for any in-flight query on `conn`.
   /// Fire-and-forget. Thread-safe. Idempotent on idle.
   ///
@@ -565,6 +614,9 @@ class PostgresBinding {
     this.poolSubmitQueryParamsPrefixed,
     this.poolSubmitQueryParamsPrefixedN,
     this.poolConnTransactionStatus,
+    this.poolSubmitQueryCached,
+    this.poolSetStatementCacheCapacity,
+    this.getErrorSqlstate,
   });
 
   factory PostgresBinding(ffi.DynamicLibrary lib) {
@@ -623,6 +675,21 @@ class PostgresBinding {
               .providesSymbol('pool_conn_transaction_status')
           ? lib.lookupFunction<_PoolConnTransactionStatusNative,
               _PoolConnTransactionStatusDart>('pool_conn_transaction_status')
+          : null,
+      // Looked up only if present, so a MINOR 6 library still loads.
+      poolSubmitQueryCached: lib.providesSymbol('pool_submit_query_cached')
+          ? lib.lookupFunction<_PoolSubmitQueryCachedNative,
+              _PoolSubmitQueryCachedDart>('pool_submit_query_cached')
+          : null,
+      poolSetStatementCacheCapacity:
+          lib.providesSymbol('pool_set_statement_cache_capacity')
+              ? lib.lookupFunction<_PoolSetStatementCacheCapacityNative,
+                      _PoolSetStatementCacheCapacityDart>(
+                  'pool_set_statement_cache_capacity')
+              : null,
+      getErrorSqlstate: lib.providesSymbol('get_error_sqlstate')
+          ? lib.lookupFunction<_GetErrorSqlstateNative, _GetErrorSqlstateDart>(
+              'get_error_sqlstate')
           : null,
     );
   }

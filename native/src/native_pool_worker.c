@@ -12,6 +12,7 @@
 #include "native_pool_internal.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -38,6 +39,12 @@
 // wall-clock deadline (`timeout_ms == 0`). 1s ≈ a worst-case shutdown
 // latency that keeps tests snappy while staying invisible at runtime.
 #define WORKER_SHUTDOWN_POLL_MS ((int64_t)1000)
+
+// After a query deadline expires and the worker cancels, how long it keeps
+// draining for the server to end the statement before giving the slot up
+// for a reset. Shared by every path (cancel_and_drain, the prefixed and the
+// cached pipelines).
+#define PREFIXED_CANCEL_GRACE_MS ((int64_t)5000)
 
 // ─────────────────────────────────────────────────────────────────
 // Time helpers
@@ -159,6 +166,86 @@ static int64_t flush_outgoing(native_conn_t* conn,
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Cancel and drain after a deadline (k101)
+// ─────────────────────────────────────────────────────────────────
+//
+// A timed-out statement must cost the statement, not the connection. libpq
+// keeps a command in progress until every result of it, the cancel's error
+// included, has been consumed; a path that cancelled and returned left
+// that behind, every later dispatch on the slot failed, and nothing flagged
+// it for reset because PQstatus stayed OK. Called only once the statement
+// was fully sent (a deadline hit while waiting for results), it cancels and
+// drains every remaining result for up to PREFIXED_CANCEL_GRACE_MS,
+// discarding them. A deadline hit while still SENDING never comes here:
+// the server would ignore a cancel for a statement it has not finished
+// reading, and completing the send would run it after the caller was told
+// it timed out. Those paths give the session up instead (see
+// worker_classify_failure).
+//
+// `pipeline_syncs` > 0: the connection is in pipeline mode, where
+// PQgetResult returns NULL between statements; drain until that many
+// PGRES_PIPELINE_SYNC markers instead.
+//
+// Returns 1 when libpq is idle again. Otherwise (grace expired, shutdown,
+// lost link, a COPY state) it flags the slot CONN_HEALTH_LOST and returns
+// 0; worker_classify_failure then reconnects the slot and reports the
+// statement as lost, so the caller's transaction is known to be gone.
+// `issue_cancel` itself is a blocking PQcancel: with the server
+// unreachable it can outlast the grace window.
+static int cancel_and_drain(native_conn_t* conn, PGconn* pg, int sock,
+                            int pipeline_syncs) {
+    struct timespec grace;
+    compute_deadline(&grace, PREFIXED_CANCEL_GRACE_MS);
+    issue_cancel(pg);
+    int syncs = 0;
+    while (1) {
+        if (atomic_load(&conn->shutdown_requested)) {
+            atomic_store(&conn->health, CONN_HEALTH_LOST);
+            return 0;
+        }
+        if (PQisBusy(pg)) {
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(sock, &rfds);
+            struct timeval tv;
+            if (!next_select_tv(&tv, 1, &grace)) {
+                atomic_store(&conn->health, CONN_HEALTH_LOST);
+                return 0;
+            }
+            int rc = select(sock + 1, &rfds, NULL, NULL, &tv);
+            if (rc < 0) {
+                if (errno == EINTR) continue;
+                atomic_store(&conn->health, CONN_HEALTH_LOST);
+                return 0;
+            }
+            if (rc == 0) continue;
+            if (PQconsumeInput(pg) == 0) {
+                atomic_store(&conn->health, CONN_HEALTH_LOST);
+                return 0;
+            }
+            continue;
+        }
+        PGresult* r = PQgetResult(pg);
+        if (r == NULL) {
+            if (pipeline_syncs == 0) return 1;
+            continue;  // separator between pipelined statements
+        }
+        ExecStatusType st = PQresultStatus(r);
+        PQclear(r);
+        if (st == PGRES_COPY_OUT || st == PGRES_COPY_IN ||
+            st == PGRES_COPY_BOTH) {
+            // Never ends on its own (see drain_into_chain): reset instead.
+            atomic_store(&conn->health, CONN_HEALTH_LOST);
+            return 0;
+        }
+        if (pipeline_syncs > 0 && st == PGRES_PIPELINE_SYNC &&
+            ++syncs == pipeline_syncs) {
+            return 1;
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Single-query execution path
 // ─────────────────────────────────────────────────────────────────
 
@@ -207,9 +294,10 @@ static int64_t drain_into_chain(native_conn_t* conn,
 
             struct timeval tv;
             if (!next_select_tv(&tv, has_deadline, deadline)) {
-                // Wall-clock deadline expired.
-                issue_cancel(pg);
+                // Wall-clock deadline expired: cancel and drain, so the
+                // slot is usable again (or flagged for reset).
                 native_pool_free_result_chain(conn);
+                cancel_and_drain(conn, pg, sock, 0);
                 return WORKER_PORT_ABORTED;
             }
 
@@ -217,6 +305,7 @@ static int64_t drain_into_chain(native_conn_t* conn,
             if (rc < 0) {
                 if (errno == EINTR) continue;
                 native_pool_free_result_chain(conn);
+                atomic_store(&conn->health, CONN_HEALTH_LOST);  // libpq busy
                 return WORKER_PORT_ABORTED;
             }
             if (rc == 0) {
@@ -258,6 +347,7 @@ static int64_t drain_into_chain(native_conn_t* conn,
                     link_lost = 1;
                 } else {
                     native_pool_free_result_chain(conn);
+                    atomic_store(&conn->health, CONN_HEALTH_LOST);  // libpq busy
                     return WORKER_PORT_ABORTED;
                 }
             }
@@ -304,6 +394,7 @@ static int64_t drain_into_chain(native_conn_t* conn,
         if (!native_pool_chain_append(conn, r)) {
             PQclear(r);
             native_pool_free_result_chain(conn);
+            atomic_store(&conn->health, CONN_HEALTH_LOST);  // results left behind
             return WORKER_PORT_ABORTED;
         }
         // Loop; PQisBusy re-checked before the next PQgetResult.
@@ -344,6 +435,9 @@ static int64_t execute_single(native_conn_t* conn,
     // Non-blocking conn: drain the send buffer without spinning.
     if (flush_outgoing(conn, pg, sock, has_deadline, &deadline)
             != WORKER_PORT_OK) {
+        // Not fully sent: give the session up rather than finish the send
+        // (the statement would run after the timeout). k101.
+        atomic_store(&conn->health, CONN_HEALTH_LOST);
         return WORKER_PORT_ABORTED;
     }
 
@@ -399,9 +493,11 @@ static int64_t execute_pipeline(native_conn_t* conn,
     struct timespec deadline;
     if (has_deadline) compute_deadline(&deadline, timeout_ms);
 
-    // Spin-free flush; exit pipeline mode on abort like the paths above.
+    // Spin-free flush. Not fully sent: give the session up rather than
+    // finish the send (k101); the reset also leaves pipeline mode.
     if (flush_outgoing(conn, pg, sock, has_deadline, &deadline)
             != WORKER_PORT_OK) {
+        atomic_store(&conn->health, CONN_HEALTH_LOST);
         PQexitPipelineMode(pg);
         return WORKER_PORT_ABORTED;
     }
@@ -412,6 +508,7 @@ static int64_t execute_pipeline(native_conn_t* conn,
     while (remaining > 0) {
         if (atomic_load(&conn->shutdown_requested)) {
             issue_cancel(pg);
+            atomic_store(&conn->health, CONN_HEALTH_LOST);
             status = WORKER_PORT_ABORTED;
             break;
         }
@@ -423,7 +520,9 @@ static int64_t execute_pipeline(native_conn_t* conn,
 
             struct timeval tv;
             if (!next_select_tv(&tv, has_deadline, &deadline)) {
-                issue_cancel(pg);
+                // Drain to the Sync so the conn can leave pipeline mode
+                // and take the ROLLBACK below (k101).
+                cancel_and_drain(conn, pg, sock, 1);
                 status = WORKER_PORT_ABORTED;
                 break;
             }
@@ -431,6 +530,7 @@ static int64_t execute_pipeline(native_conn_t* conn,
             int rc = select(sock + 1, &rfds, NULL, NULL, &tv);
             if (rc < 0) {
                 if (errno == EINTR) continue;
+                atomic_store(&conn->health, CONN_HEALTH_LOST);  // libpq busy
                 status = WORKER_PORT_ABORTED;
                 break;
             }
@@ -439,6 +539,7 @@ static int64_t execute_pipeline(native_conn_t* conn,
                 continue;
             }
             if (PQconsumeInput(pg) == 0) {
+                atomic_store(&conn->health, CONN_HEALTH_LOST);  // libpq busy
                 status = WORKER_PORT_ABORTED;
                 break;
             }
@@ -526,6 +627,7 @@ static int64_t execute_single_params(native_conn_t* conn,
     // Spin-free flush (deadline computed above so it counts the send).
     if (flush_outgoing(conn, pg, sock, has_deadline, &deadline)
             != WORKER_PORT_OK) {
+        atomic_store(&conn->health, CONN_HEALTH_LOST);  // not fully sent (k101)
         return WORKER_PORT_ABORTED;
     }
 
@@ -541,17 +643,20 @@ static int64_t execute_single_params(native_conn_t* conn,
 
         struct timeval tv;
         if (!next_select_tv(&tv, has_deadline, &deadline)) {
-            issue_cancel(pg);
+            // Cancel and drain, so the slot is usable again (k101).
+            cancel_and_drain(conn, pg, sock, 0);
             return WORKER_PORT_ABORTED;
         }
 
         int rc = select(sock + 1, &rfds, NULL, NULL, &tv);
         if (rc < 0) {
             if (errno == EINTR) continue;
+            atomic_store(&conn->health, CONN_HEALTH_LOST);  // libpq busy
             return WORKER_PORT_ABORTED;
         }
         if (rc == 0) continue;
         if (PQconsumeInput(pg) == 0) {
+            atomic_store(&conn->health, CONN_HEALTH_LOST);  // libpq busy
             return WORKER_PORT_ABORTED;
         }
         if (!PQisBusy(pg)) {
@@ -621,10 +726,12 @@ static int64_t execute_multi_read(native_conn_t* conn,
     struct timespec deadline;
     if (has_deadline) compute_deadline(&deadline, timeout_ms);
 
-    // Spin-free flush; free the partial chain on abort, as drain_into_chain does.
+    // Spin-free flush; free the partial chain on abort, as drain_into_chain
+    // does. Not fully sent: give the session up (k101).
     if (flush_outgoing(conn, pg, sock, has_deadline, &deadline)
             != WORKER_PORT_OK) {
         native_pool_free_result_chain(conn);
+        atomic_store(&conn->health, CONN_HEALTH_LOST);
         return WORKER_PORT_ABORTED;
     }
 
@@ -650,8 +757,8 @@ static int64_t execute_multi_read(native_conn_t* conn,
 // would refuse the caller's ROLLBACK. If the Sync never arrives the
 // slot is flagged for reset. No ROLLBACK here, unlike
 // `execute_pipeline`: the transaction the prefix opened belongs to the
-// caller, as with the fused BEGIN of the simple path.
-#define PREFIXED_CANCEL_GRACE_MS ((int64_t)5000)
+// caller, as with the fused BEGIN of the simple path. The grace window is
+// PREFIXED_CANCEL_GRACE_MS (defined above, shared by every path).
 
 static int64_t execute_prefixed_params(native_conn_t* conn,
                                        char* const* prefixes,
@@ -707,13 +814,15 @@ static int64_t execute_prefixed_params(native_conn_t* conn,
     struct timespec deadline;
     if (has_deadline) compute_deadline(&deadline, timeout_ms);
 
-    // flush_outgoing has already cancelled on timeout/shutdown; the
-    // drain below still runs to reach the Sync.
+    // Not fully sent: give the session up rather than finish the send,
+    // which would run the statements after the caller was told they timed
+    // out (a cancel is ignored while the server is still reading). k101.
     if (flush_outgoing(conn, pg, sock, has_deadline, &deadline)
             != WORKER_PORT_OK) {
-        status = WORKER_PORT_ABORTED;
-        has_deadline = 1;
-        compute_deadline(&deadline, PREFIXED_CANCEL_GRACE_MS);
+        PQexitPipelineMode(pg);
+        atomic_store(&conn->health, CONN_HEALTH_LOST);
+        native_pool_free_result_chain(conn);
+        return WORKER_PORT_ABORTED;
     }
 
     int cancelled = (status != WORKER_PORT_OK);
@@ -780,6 +889,522 @@ static int64_t execute_prefixed_params(native_conn_t* conn,
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Cached Extended query — ABI MINOR 7 path
+// ─────────────────────────────────────────────────────────────────
+//
+// The query runs as a named prepared statement kept in the
+// connection's LRU (`conn->stmts`, stmt_cache.h), always in libpq
+// pipeline mode, so a timeout cancels and drains to the Sync on a hit as
+// on a miss (the wire carries the same Bind/Execute/Sync as a bare
+// `PQsendQueryPrepared`):
+//
+//   [segment 1, only when names await close]  Close ... Sync
+//                                     (fallback: DEALLOCATE Sync, per name)
+//   [segment 2]  prefixes ... [Prepare on a miss] QueryPrepared  Sync
+//
+// An error inside a segment aborts the rest of THAT segment only, so a
+// failed DEALLOCATE (the statement was already gone) never touches the
+// query. Without `Close`, names evicted while the connection sits in a
+// transaction are deallocated first, under a savepoint
+// (`flush_closes_in_transaction`). The caller sees the same chain as `execute_prefixed_params`:
+// one result per prefix, then the query's (or the Prepare's error when
+// the Prepare failed). Timeout handling is that path's too.
+
+enum { K_DISCARD = 0, K_CHAIN = 1, K_PREPARE = 2, K_QUERY = 3 };
+
+// `PQsendClosePrepared` exists from libpq 17. Defining
+// SLINGSHOT_NO_CLOSE_PREPARED at build time forces the DEALLOCATE fallback
+// on a newer libpq, so tests can cover it on any build host.
+#if defined(LIBPQ_HAS_CLOSE_PREPARED) && !defined(SLINGSHOT_NO_CLOSE_PREPARED)
+#define STMT_USE_CLOSE 1
+#else
+#define STMT_USE_CLOSE 0
+#endif
+
+// 26000: invalid_sql_statement_name (the statement is gone).
+static int is_missing_statement(const char* state) {
+    return state != NULL && strcmp(state, "26000") == 0;
+}
+
+// 0A000 is the generic feature_not_supported; only the one raised by the
+// plan cache's revalidation ("cached plan must not change result type",
+// after a schema change) means the statement went stale. The source
+// function is matched instead of the message, which is localised.
+static int is_stale_plan(PGresult* r, const char* state) {
+    if (state == NULL || strcmp(state, "0A000") != 0) return 0;
+    const char* fn = PQresultErrorField(r, PG_DIAG_SOURCE_FUNCTION);
+    return fn != NULL && strcmp(fn, "RevalidateCachedQuery") == 0;
+}
+
+// Whether names queued for close can go out in segment 1 now. A Close of
+// a missing name is not an error in the protocol, so with libpq >= 17 the
+// only state to avoid is an aborted transaction (the server would reject
+// it). `DEALLOCATE` of a missing name IS an error, so the fallback sends
+// it in segment 1 only on an idle connection, each in its own implicit
+// transaction (its own Sync); inside the caller's transaction it goes
+// through `flush_closes_in_transaction` instead.
+static int pending_close_allowed(PGconn* pg) {
+    PGTransactionStatusType ts = PQtransactionStatus(pg);
+#if STMT_USE_CLOSE
+    return ts == PQTRANS_IDLE || ts == PQTRANS_INTRANS;
+#else
+    return ts == PQTRANS_IDLE;
+#endif
+}
+
+#if !STMT_USE_CLOSE
+// Runs `sql` (Simple protocol, may hold several statements) and discards
+// its results, with the worker's discipline: non-blocking, under a
+// deadline of its own of `timeout_ms` (0 = none; each round-trip of a
+// cached job gets the full timeout, as the retry does) and the shutdown
+// poll. On expiry it cancels and keeps draining for up to
+// PREFIXED_CANCEL_GRACE_MS; if the results never end, the slot is flagged
+// for reset. Returns 1 when every result was drained without a cancel,
+// 0 otherwise (cancelled, shutdown, lost link).
+static int exec_bounded(native_conn_t* conn, const char* sql,
+                        int64_t timeout_ms) {
+    PGconn* pg = conn->pg;
+    int sock = PQsocket(pg);
+    if (sock < 0 || PQsendQuery(pg, sql) != 1) return 0;
+
+    int has_deadline = (timeout_ms > 0);
+    struct timespec deadline;
+    if (has_deadline) compute_deadline(&deadline, timeout_ms);
+    int cancelled = 0;
+    if (flush_outgoing(conn, pg, sock, has_deadline, &deadline)
+            != WORKER_PORT_OK) {
+        // Not fully sent: give the session up (see execute_prefixed_params).
+        atomic_store(&conn->health, CONN_HEALTH_LOST);
+        return 0;
+    }
+    while (1) {
+        if (atomic_load(&conn->shutdown_requested)) {
+            issue_cancel(pg);
+            atomic_store(&conn->health, CONN_HEALTH_LOST);
+            return 0;
+        }
+        if (PQisBusy(pg)) {
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(sock, &rfds);
+            struct timeval tv;
+            if (!next_select_tv(&tv, has_deadline, &deadline)) {
+                if (cancelled) {  // grace expired: results never ended
+                    atomic_store(&conn->health, CONN_HEALTH_LOST);
+                    return 0;
+                }
+                issue_cancel(pg);
+                cancelled = 1;
+                has_deadline = 1;
+                compute_deadline(&deadline, PREFIXED_CANCEL_GRACE_MS);
+                continue;
+            }
+            int rc = select(sock + 1, &rfds, NULL, NULL, &tv);
+            if (rc < 0) {
+                if (errno == EINTR) continue;
+                atomic_store(&conn->health, CONN_HEALTH_LOST);
+                return 0;
+            }
+            if (rc == 0) continue;
+            if (PQconsumeInput(pg) == 0) {
+                atomic_store(&conn->health, CONN_HEALTH_LOST);
+                return 0;
+            }
+            continue;
+        }
+        PGresult* r = PQgetResult(pg);
+        if (r == NULL) return !cancelled;
+        PQclear(r);
+    }
+}
+
+// Fallback only: deallocates the queued names inside the caller's open
+// transaction without risking it. The names in the queue were all
+// confirmed prepared (a statement found missing is never queued), so a
+// failure means someone deallocated it by hand; the savepoint turns that
+// into a no-op instead of an aborted transaction. A round-trip of its
+// own, bounded by the job's timeout: it runs only when statements were
+// evicted inside a transaction, which a cache sized to the working set
+// makes rare. On failure the names after the culprit stay on the server
+// until the session ends. Returns 0 when the round-trip itself failed
+// (timeout, lost link); the job then aborts.
+static int flush_closes_in_transaction(native_conn_t* conn,
+                                       int64_t timeout_ms) {
+    stmt_cache_t* c = &conn->stmts;
+    PGconn* pg = conn->pg;
+    size_t cap = 64 + (size_t)c->n_pending * (STMT_NAME_LEN + 16);
+    char* sql = (char*)malloc(cap);
+    if (sql == NULL) return 1;  // retried on a later job
+    size_t len = (size_t)snprintf(sql, cap, "SAVEPOINT _ss_close;");
+    for (int32_t i = 0; i < c->n_pending; i++) {
+        len += (size_t)snprintf(sql + len, cap - len, "DEALLOCATE \"%s\";",
+                                c->pending[i]);
+    }
+    snprintf(sql + len, cap - len, "RELEASE SAVEPOINT _ss_close");
+    stmt_cache_pending_clear(c);
+    int ok = exec_bounded(conn, sql, timeout_ms);
+    free(sql);
+    if (!ok) return 0;
+    if (PQtransactionStatus(pg) == PQTRANS_INERROR) {
+        return exec_bounded(conn,
+                            "ROLLBACK TO SAVEPOINT _ss_close; "
+                            "RELEASE SAVEPOINT _ss_close",
+                            timeout_ms);
+    }
+    return 1;
+}
+#endif
+
+static int send_close(PGconn* pg, const char* name) {
+#if STMT_USE_CLOSE
+    return PQsendClosePrepared(pg, name);
+#else
+    char sql[STMT_NAME_LEN + 16];
+    snprintf(sql, sizeof(sql), "DEALLOCATE \"%s\"", name);
+    return PQsendQueryParams(pg, sql, 0, NULL, NULL, NULL, NULL, 0);
+#endif
+}
+
+// Drops the last node of the result chain (the query's result before a
+// retry). The chain holds at most the prefixes plus one, so the walk is
+// short.
+static void chain_drop_tail(native_conn_t* conn) {
+    pg_result_node_t* node = conn->chain_head;
+    if (node == NULL) return;
+    if (node->next == NULL) {
+        native_pool_free_result_chain(conn);
+        return;
+    }
+    while (node->next != conn->chain_tail) node = node->next;
+    PQclear(conn->chain_tail->result);
+    free(conn->chain_tail);
+    node->next = NULL;
+    conn->chain_tail = node;
+}
+
+// One cached job, laid out as above. `*prepared_ok` is set when the
+// server confirmed the Prepare (the caller then caches `name`). With
+// `name` NULL (capacity 0, flushing what is left) the query goes unnamed.
+static int64_t cached_pipeline(native_conn_t* conn,
+                               char* const* prefixes,
+                               int32_t n_prefix,
+                               int flush_pending,
+                               const char* name,
+                               int do_prepare,
+                               const char* sql,
+                               int32_t n_params,
+                               const Oid* types_oid,
+                               const char* const* param_values,
+                               const int* param_lengths,
+                               const int* param_formats,
+                               int result_format,
+                               int64_t timeout_ms,
+                               int* prepared_ok) {
+    PGconn* pg = conn->pg;
+    int sock = PQsocket(pg);
+    if (sock < 0) return WORKER_PORT_ABORTED;
+    stmt_cache_t* c = &conn->stmts;
+
+    int32_t n_close = flush_pending ? c->n_pending : 0;
+    int32_t cap_kinds = n_close + n_prefix + 2;
+    unsigned char* kinds = (unsigned char*)malloc((size_t)cap_kinds);
+    if (kinds == NULL) return WORKER_PORT_ABORTED;
+
+    if (PQenterPipelineMode(pg) == 0) {
+        free(kinds);
+        return WORKER_PORT_ABORTED;
+    }
+
+    int32_t nk = 0;
+    int expected_syncs = 0;
+    int64_t status = WORKER_PORT_OK;
+
+    // Segment 1 — close evicted names. With Close, one Sync for all; with
+    // the DEALLOCATE fallback (idle connection only), one Sync per name,
+    // so one already gone does not abort the others.
+    for (int32_t i = 0; i < n_close && status == WORKER_PORT_OK; i++) {
+        if (send_close(pg, c->pending[i]) != 1) {
+            status = WORKER_PORT_ABORTED;
+            break;
+        }
+        kinds[nk++] = K_DISCARD;
+        if (!STMT_USE_CLOSE || i == n_close - 1) {
+            if (PQpipelineSync(pg) == 0) {
+                PQexitPipelineMode(pg);
+                atomic_store(&conn->health, CONN_HEALTH_LOST);
+                free(kinds);
+                return WORKER_PORT_ABORTED;
+            }
+            expected_syncs++;
+        }
+    }
+    if (status != WORKER_PORT_OK && nk > 0 && STMT_USE_CLOSE) {
+        // Close queued before the failed one still need their Sync.
+        if (PQpipelineSync(pg) == 0) {
+            PQexitPipelineMode(pg);
+            atomic_store(&conn->health, CONN_HEALTH_LOST);
+            free(kinds);
+            return WORKER_PORT_ABORTED;
+        }
+        expected_syncs++;
+    }
+    // Once on the wire (or failed to go), the names are done with: a name
+    // whose close did not run stays on the server until the session ends.
+    if (n_close > 0) stmt_cache_pending_clear(c);
+
+    // Segment 2 — prefixes, Prepare on a miss, the query.
+    int32_t seg2_start = nk;
+    for (int32_t i = 0; i < n_prefix && status == WORKER_PORT_OK; i++) {
+        if (PQsendQueryParams(pg, prefixes[i], 0, NULL, NULL, NULL, NULL, 0)
+                != 1) {
+            status = WORKER_PORT_ABORTED;
+        } else {
+            kinds[nk++] = K_CHAIN;
+        }
+    }
+    if (status == WORKER_PORT_OK && do_prepare && name != NULL) {
+        if (PQsendPrepare(pg, name, sql, n_params, types_oid) != 1) {
+            status = WORKER_PORT_ABORTED;
+        } else {
+            kinds[nk++] = K_PREPARE;
+        }
+    }
+    if (status == WORKER_PORT_OK) {
+        int sent = (name != NULL)
+            ? PQsendQueryPrepared(pg, name, n_params, param_values,
+                                  param_lengths, param_formats, result_format)
+            : PQsendQueryParams(pg, sql, n_params, types_oid, param_values,
+                                param_lengths, param_formats, result_format);
+        if (sent != 1) {
+            status = WORKER_PORT_ABORTED;
+        } else {
+            kinds[nk++] = K_QUERY;
+        }
+    }
+    if (nk > seg2_start) {
+        if (PQpipelineSync(pg) == 0) {
+            PQexitPipelineMode(pg);
+            atomic_store(&conn->health, CONN_HEALTH_LOST);
+            free(kinds);
+            return WORKER_PORT_ABORTED;
+        }
+        expected_syncs++;
+    }
+    if (expected_syncs == 0) {
+        // Nothing went out at all.
+        PQexitPipelineMode(pg);
+        free(kinds);
+        return WORKER_PORT_ABORTED;
+    }
+
+    int has_deadline = (timeout_ms > 0);
+    struct timespec deadline;
+    if (has_deadline) compute_deadline(&deadline, timeout_ms);
+
+    if (flush_outgoing(conn, pg, sock, has_deadline, &deadline)
+            != WORKER_PORT_OK) {
+        // Not fully sent: give the session up (see execute_prefixed_params).
+        PQexitPipelineMode(pg);
+        atomic_store(&conn->health, CONN_HEALTH_LOST);
+        free(kinds);
+        native_pool_free_result_chain(conn);
+        return WORKER_PORT_ABORTED;
+    }
+
+    int cancelled = (status != WORKER_PORT_OK);
+    int syncs = 0;
+    int32_t ki = 0;
+    PGresult* prep_err = NULL;
+    while (syncs < expected_syncs) {
+        if (atomic_load(&conn->shutdown_requested)) {
+            issue_cancel(pg);
+            status = WORKER_PORT_ABORTED;
+            break;
+        }
+
+        if (PQisBusy(pg)) {
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(sock, &rfds);
+
+            struct timeval tv;
+            if (!next_select_tv(&tv, has_deadline, &deadline)) {
+                if (cancelled) break;  // grace expired without the Sync
+                issue_cancel(pg);
+                cancelled = 1;
+                status = WORKER_PORT_ABORTED;
+                has_deadline = 1;
+                compute_deadline(&deadline, PREFIXED_CANCEL_GRACE_MS);
+                continue;
+            }
+
+            int rc = select(sock + 1, &rfds, NULL, NULL, &tv);
+            if (rc < 0) {
+                if (errno == EINTR) continue;
+                status = WORKER_PORT_ABORTED;
+                break;
+            }
+            if (rc == 0) continue;
+            if (PQconsumeInput(pg) == 0) {
+                status = WORKER_PORT_ABORTED;
+                break;
+            }
+            continue;
+        }
+
+        PGresult* r = PQgetResult(pg);
+        if (r == NULL) continue;  // separator between queued statements
+        ExecStatusType st = PQresultStatus(r);
+        if (st == PGRES_PIPELINE_SYNC) {
+            PQclear(r);
+            syncs++;
+            continue;
+        }
+        if (ki >= nk) {  // defensive: more results than statements
+            PQclear(r);
+            continue;
+        }
+        int kind = kinds[ki++];
+        if (kind == K_PREPARE) {
+            // Recorded even on a cancelled job: the statement exists.
+            if (st == PGRES_COMMAND_OK) {
+                *prepared_ok = 1;
+                PQclear(r);
+            } else if (st == PGRES_FATAL_ERROR && prep_err == NULL) {
+                prep_err = r;  // takes the query's place below
+            } else {
+                PQclear(r);
+            }
+            continue;
+        }
+        if (kind == K_DISCARD || status != WORKER_PORT_OK) {
+            PQclear(r);
+            continue;
+        }
+        if (kind == K_QUERY && prep_err != NULL) {
+            // The query was aborted by the failed Prepare; the Prepare's
+            // error is the one that explains it (syntax, unknown table).
+            PQclear(r);
+            r = prep_err;
+            prep_err = NULL;
+        }
+        if (!native_pool_chain_append(conn, r)) {
+            PQclear(r);
+            status = WORKER_PORT_ABORTED;
+        }
+    }
+    if (prep_err != NULL) PQclear(prep_err);
+    free(kinds);
+
+    if (syncs < expected_syncs || PQexitPipelineMode(pg) == 0) {
+        // Still in pipeline mode: flag the slot for reset, as
+        // execute_prefixed_params does.
+        PQexitPipelineMode(pg);
+        atomic_store(&conn->health, CONN_HEALTH_LOST);
+        status = WORKER_PORT_ABORTED;
+    }
+    if (status != WORKER_PORT_OK) native_pool_free_result_chain(conn);
+    return status;
+}
+
+static int64_t execute_cached(native_conn_t* conn,
+                              char* const* prefixes,
+                              int32_t n_prefix,
+                              const char* sql,
+                              int32_t n_params,
+                              const int32_t* param_types,
+                              const char* const* param_values,
+                              const int* param_lengths,
+                              const int* param_formats,
+                              int result_format,
+                              int64_t timeout_ms) {
+    stmt_cache_t* c = &conn->stmts;
+    int32_t cap = atomic_load(&conn->pool->stmt_capacity);
+    if (cap != c->capacity) stmt_cache_set_capacity(c, cap);
+
+    if (c->capacity == 0 && c->n_pending == 0) {
+        // Cache off and nothing left to close: exactly the uncached paths.
+        if (n_prefix > 0) {
+            return execute_prefixed_params(conn, prefixes, n_prefix, sql,
+                                           n_params, param_types,
+                                           param_values, param_lengths,
+                                           param_formats, result_format,
+                                           timeout_ms);
+        }
+        return execute_single_params(conn, sql, n_params, param_types,
+                                     param_values, param_lengths,
+                                     param_formats, result_format,
+                                     timeout_ms);
+    }
+
+    native_pool_free_result_chain(conn);
+
+    const Oid* types_oid = NULL;
+    if (n_params > 0 && param_types != NULL) {
+        types_oid = (const Oid*)param_types;  // same width, see execute_single_params
+    }
+
+    for (int attempt = 0; ; attempt++) {
+        // A retry runs without the prefixes: they already ran, and their
+        // results are already in the chain.
+        char* const* pfx = (attempt == 0) ? prefixes : NULL;
+        int32_t npfx = (attempt == 0) ? n_prefix : 0;
+
+#if !STMT_USE_CLOSE
+        if (c->n_pending > 0 &&
+            PQtransactionStatus(conn->pg) == PQTRANS_INTRANS) {
+            if (!flush_closes_in_transaction(conn, timeout_ms)) {
+                native_pool_free_result_chain(conn);
+                return WORKER_PORT_ABORTED;
+            }
+        }
+#endif
+        stmt_entry_t* e = stmt_cache_lookup(c, sql, n_params, param_types);
+        char fresh[STMT_NAME_LEN];
+        const char* name = NULL;  // unnamed while the cache is off
+        if (e != NULL) {
+            name = e->name;
+        } else if (c->capacity > 0) {
+            stmt_cache_next_name(c, fresh);
+            name = fresh;
+        }
+        int flush = c->n_pending > 0 && pending_close_allowed(conn->pg);
+
+        int prepared_ok = 0;
+        int64_t status = cached_pipeline(conn, pfx, npfx, flush, name,
+                                         e == NULL, sql, n_params, types_oid,
+                                         param_values, param_lengths,
+                                         param_formats, result_format,
+                                         timeout_ms, &prepared_ok);
+        if (prepared_ok) stmt_cache_insert(c, sql, n_params, param_types, fresh);
+        if (status != WORKER_PORT_OK) return status;
+
+        // The query's result is the last of the chain.
+        PGresult* q = (conn->chain_tail != NULL) ? conn->chain_tail->result
+                                                 : NULL;
+        const char* state = (q != NULL)
+            ? PQresultErrorField(q, PG_DIAG_SQLSTATE) : NULL;
+        int retry = 0;
+        if (e != NULL && is_missing_statement(state)) {
+            stmt_cache_remove(c, e, 0);  // gone: nothing to close
+            retry = 1;
+        } else if (e != NULL && is_stale_plan(q, state)) {
+            stmt_cache_remove(c, e, 1);  // still on the server: close it
+            retry = 1;
+        } else if (e == NULL && name != NULL && state != NULL &&
+                   strcmp(state, "42P05") == 0) {
+            retry = 1;  // name taken by the caller's own PREPARE
+        }
+        // Inside a transaction the error already aborted it: hand it back.
+        if (!retry || attempt > 0 ||
+            PQtransactionStatus(conn->pg) != PQTRANS_IDLE) {
+            return WORKER_PORT_OK;
+        }
+        chain_drop_tail(conn);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Link loss: detection and sliced reconnect (ABI MINOR 3)
 // ─────────────────────────────────────────────────────────────────
 //
@@ -800,6 +1425,10 @@ static int64_t execute_prefixed_params(native_conn_t* conn,
 int native_pool_worker_reset(native_conn_t* conn) {
     PGconn* pg = conn->pg;
     if (pg == NULL) return 0;
+
+    // ABI MINOR 7: the server session — and every statement prepared on
+    // it — is gone from here on, whether or not the reset succeeds.
+    stmt_cache_clear(&conn->stmts);
 
     if (PQresetStart(pg) == 0) {
         // Could not even begin — the conn stays marked LOST and the
@@ -846,8 +1475,9 @@ int native_pool_worker_reset(native_conn_t* conn) {
     }
 }
 
-// Turns a generic ABORTED into CONN_LOST when the link is actually
-// gone, and reconnects the slot.
+// Turns a generic ABORTED into CONN_LOST when the session is gone (the
+// link died, or a path gave the session up and flagged the slot), and
+// reconnects the slot.
 //
 // The distinction matters because the two failures need different
 // handling and, until MINOR 3, arrived as the same code 2: a timeout
@@ -859,6 +1489,21 @@ int native_pool_worker_reset(native_conn_t* conn) {
 // status, it does not talk to the server.
 static int64_t worker_classify_failure(native_conn_t* conn) {
     if (conn->pg == NULL) return WORKER_PORT_ABORTED;
+    if (atomic_load(&conn->shutdown_requested)) {
+        // The pool is closing: no point opening a fresh session to throw
+        // it away. The slot is torn down after this job.
+        return WORKER_PORT_ABORTED;
+    }
+    if (atomic_load(&conn->health) == CONN_HEALTH_LOST) {
+        // A path gave the session up with the link still up (a statement
+        // that could not be fully sent or drained, results left behind).
+        // Reconnect now and report the statement lost, as for a dead link:
+        // reporting a plain abort would let the caller's next statement run
+        // on the fresh session, in autocommit, outside the transaction it
+        // was written for. k101.
+        native_pool_worker_reset(conn);
+        return WORKER_PORT_CONN_LOST;
+    }
     if (PQstatus(conn->pg) != CONNECTION_BAD) {
         // Ordinary failure of one query — timeout, cancel, shutdown,
         // malformed dispatch. The link is fine.
@@ -903,6 +1548,7 @@ void* native_pool_worker_main(void* arg) {
         int is_pipeline = conn->is_pipeline;
         int is_params = conn->is_params;
         int is_multi_read = conn->is_multi_read;
+        int is_cached = conn->is_cached;
         int32_t n_prefix = conn->n_prefix;
         int32_t sql_count = conn->sql_count;
         int64_t port_id = conn->port_id;
@@ -917,7 +1563,7 @@ void* native_pool_worker_main(void* arg) {
         int result_format = conn->result_format;
         pthread_mutex_unlock(&conn->slot_mutex);
 
-        // ── 2. Execute (one of five paths) ──
+        // ── 2. Execute (one of six paths) ──
         //
         // ABI MINOR 3: a slot handed out while convalescing gets one
         // reset attempt before it runs anything. `pool_acquire` only
@@ -929,7 +1575,16 @@ void* native_pool_worker_main(void* arg) {
             status = WORKER_PORT_CONN_LOST;
             goto notify;
         }
-        if (is_params && n_prefix > 0) {
+        if (is_cached) {
+            status = execute_cached(conn, sql, n_prefix, sql[n_prefix],
+                                    n_params,
+                                    param_types_snap,
+                                    param_vals_snap,
+                                    param_lens_snap,
+                                    param_fmts_snap,
+                                    result_format,
+                                    timeout_ms);
+        } else if (is_params && n_prefix > 0) {
             status = execute_prefixed_params(conn, sql, n_prefix,
                                              sql[n_prefix],
                                              n_params,

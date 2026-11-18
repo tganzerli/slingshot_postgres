@@ -54,4 +54,9 @@ const int kExpectedAbiMajor = 2;
 /// parameterless prefixes before one Extended query, one Sync) and
 /// `pool_conn_transaction_status` (libpq's local transaction state), for
 /// the deferred pool session reset. Existing symbols unchanged.
-const int kExpectedAbiMinor = 6;
+///
+/// 6 → 7 in 2026-11-16: added `pool_submit_query_cached` (Extended query
+/// through a per-connection LRU of named prepared statements),
+/// `pool_set_statement_cache_capacity` and `get_error_sqlstate`. Existing
+/// symbols unchanged.
+const int kExpectedAbiMinor = 7;

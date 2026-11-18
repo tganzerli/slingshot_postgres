@@ -4,6 +4,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/). The package follows sem
 (`libnative_db`) carries its own ABI version, `MAJOR.MINOR`, checked at load time: a different MAJOR is fatal, an
 older MINOR than the Dart side expects is a warning.
 
+## 0.1.13
+
+### Added
+
+- `PoolConfig.statementCacheSize`: a per-connection cache of server-side prepared statements, off by default (0).
+  When on, a statement that takes the Extended protocol (with `params`, or `binaryResult`) is prepared under a name
+  on the first use of its SQL on a connection, and later uses on that connection run the prepared statement, so
+  the server skips parsing and planning. Keyed by the SQL text plus the parameter types; the least recently used
+  statements beyond the capacity are evicted and closed on the server. Requires `preservePreparedStatements` (or
+  `sessionResetQuery: null`); `start` throws otherwise.
+- A cached statement that went stale (SQLSTATE 26000 after `DEALLOCATE ALL`, or 0A000 `cached plan must not change
+  result type` after a schema change) is prepared again and the query re-run once, when the connection is outside
+  a transaction. Inside a transaction the server has already aborted it: the `QueryFailedException` is thrown and
+  the next use prepares afresh. On the cached path, error messages end with ` [SQLSTATE xxxxx]`.
+- Native ABI MINOR 7: `pool_submit_query_cached`, `pool_set_statement_cache_capacity` and `get_error_sqlstate`.
+  The new Dart side loads an older library with the usual warning; the cache then refuses to start.
+
+### Fixed
+
+- A query that hit its timeout on the simple, parameterised, multi-read or pipeline path left the connection
+  unusable: libpq kept the cancelled statement in progress, every later statement on that connection failed with
+  `QueryTimeoutException`, and the pool kept handing it out. The worker now cancels and drains the statement to
+  its end before reporting the timeout, so the connection and its session stay usable.
+- When a statement cannot be ended cleanly (the deadline hit before it was fully sent, the server did not end it
+  within 5 s of the cancel, or a read failed with the link still up), the session is now given up: the connection
+  is reconnected and the statement is reported as `ConnectionLostException`, on every path. Before, some of these
+  cases reported a plain failure, and a following statement of the same transaction could run on the fresh
+  session outside the transaction. A statement not fully sent is never completed afterwards, so it does not run
+  after the caller was told it failed. The cancel itself is a blocking `PQcancel`; with the server unreachable it
+  can take longer than the 5 s window.
+
 ## 0.1.12
 
 ### Added

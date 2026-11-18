@@ -76,6 +76,7 @@ void native_pool_free_slot_payload(native_conn_t* conn) {
     conn->n_params = 0;
     conn->is_params = 0;
     conn->is_multi_read = 0;
+    conn->is_cached = 0;
     conn->n_prefix = 0;
     conn->result_format = 0;
 
@@ -135,6 +136,7 @@ static int init_conn(native_conn_t* conn,
     conn->is_pipeline = 0;
     conn->is_params = 0;
     conn->is_multi_read = 0;
+    conn->is_cached = 0;
     conn->n_prefix = 0;
     conn->sql = NULL;
     conn->sql_count = 0;
@@ -150,6 +152,7 @@ static int init_conn(native_conn_t* conn,
     conn->chain_tail = NULL;
     atomic_init(&conn->shutdown_requested, 0);
     atomic_init(&conn->health, CONN_HEALTH_OK);
+    stmt_cache_init(&conn->stmts);
 
     conn->pg = PQconnectdb(conninfo);
     if (PQstatus(conn->pg) != CONNECTION_OK) {
@@ -198,6 +201,7 @@ static void teardown_conn(native_conn_t* conn) {
     pthread_join(conn->worker, NULL);
     native_pool_free_slot_payload(conn);
     native_pool_free_result_chain(conn);
+    stmt_cache_free(&conn->stmts);
     pthread_cond_destroy(&conn->slot_cond);
     pthread_mutex_destroy(&conn->slot_mutex);
     PQfinish(conn->pg);
@@ -241,6 +245,7 @@ native_pool_t* pool_create_with_error(const char* conninfo,
     pool->max_size = max_size;
     pool->default_acquire_timeout_ms = acquire_timeout_ms;
     atomic_init(&pool->shutting_down, 0);
+    atomic_init(&pool->stmt_capacity, 0);
 
     if (pool->conninfo == NULL ||
         pthread_mutex_init(&pool->mutex, NULL) != 0) {
@@ -515,6 +520,7 @@ int pool_submit_multi_read(native_conn_t* conn,
 // `pool_submit_query_params_prefixed_n`, which store the prefixes as
 // sql[0..n_prefix-1] and the query as sql[n_prefix].
 static int submit_params_locked(native_conn_t* conn,
+                                int cached,
                                 const char* const* prefix_sqls,
                                 int32_t n_prefix,
                                 const char* sql,
@@ -629,6 +635,7 @@ static int submit_params_locked(native_conn_t* conn,
     conn->slot_filled    = 1;
     conn->is_pipeline    = 0;
     conn->is_params      = 1;
+    conn->is_cached      = cached;
     conn->n_prefix       = n_prefix;
     conn->sql            = sql_vec;
     conn->sql_count      = sql_count;
@@ -656,7 +663,7 @@ int pool_submit_query_params(native_conn_t* conn,
                              int result_format,
                              int64_t port_id,
                              int64_t timeout_ms) {
-    return submit_params_locked(conn, NULL, 0, sql, n_params, param_types,
+    return submit_params_locked(conn, 0, NULL, 0, sql, n_params, param_types,
                                 param_values, param_lengths, param_formats,
                                 result_format, port_id, timeout_ms);
 }
@@ -675,7 +682,7 @@ int pool_submit_query_params_prefixed(native_conn_t* conn,
                                       int64_t timeout_ms) {
     if (prefix_sql == NULL) return 0;
     const char* prefixes[1] = {prefix_sql};
-    return submit_params_locked(conn, prefixes, 1, sql, n_params, param_types,
+    return submit_params_locked(conn, 0, prefixes, 1, sql, n_params, param_types,
                                 param_values, param_lengths, param_formats,
                                 result_format, port_id, timeout_ms);
 }
@@ -694,10 +701,37 @@ int pool_submit_query_params_prefixed_n(native_conn_t* conn,
                                         int64_t port_id,
                                         int64_t timeout_ms) {
     if (n_prefix < 1) return 0;
-    return submit_params_locked(conn, prefix_sqls, n_prefix, sql, n_params,
+    return submit_params_locked(conn, 0, prefix_sqls, n_prefix, sql, n_params,
                                 param_types, param_values, param_lengths,
                                 param_formats, result_format, port_id,
                                 timeout_ms);
+}
+
+// ABI MINOR 7. See `native_pool.h` for the contract.
+int pool_submit_query_cached(native_conn_t* conn,
+                             const char* const* prefix_sqls,
+                             int32_t n_prefix,
+                             const char* sql,
+                             int32_t n_params,
+                             const int32_t* param_types,
+                             const char* const* param_values,
+                             const int* param_lengths,
+                             const int* param_formats,
+                             int result_format,
+                             int64_t port_id,
+                             int64_t timeout_ms) {
+    return submit_params_locked(conn, 1, prefix_sqls, n_prefix, sql, n_params,
+                                param_types, param_values, param_lengths,
+                                param_formats, result_format, port_id,
+                                timeout_ms);
+}
+
+// ABI MINOR 7. See `native_pool.h` for the contract.
+void pool_set_statement_cache_capacity(native_pool_t* pool,
+                                       int32_t capacity) {
+    if (pool == NULL) return;
+    if (capacity < 0) capacity = 0;
+    atomic_store(&pool->stmt_capacity, capacity);
 }
 
 // ABI MINOR 6. See `native_pool.h` for the contract.

@@ -76,8 +76,8 @@ class PostgresUnitOfWork implements UnitOfWork<PostgresQueryExecutorContract> {
     // which the executor fuses with the pending BEGIN. This removes one
     // round-trip per transaction versus the previous eager BEGIN.
     _leased = leased;
-    _executor =
-        PostgresQueryExecutor(_pool.binding, leased.raw, deferredBegin: true);
+    _executor = PostgresQueryExecutor(_pool.binding, leased.raw,
+        deferredBegin: true, statementCache: _pool.statementCacheEnabled);
     _active = true;
   }
 

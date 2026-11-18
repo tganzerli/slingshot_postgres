@@ -36,6 +36,7 @@ add_library(native_db SHARED
     src/native_db.c
     src/native_pool.c
     src/native_pool_worker.c
+    src/stmt_cache.c
     src/dart_api_dl.c
 )
 

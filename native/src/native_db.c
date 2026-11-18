@@ -79,6 +79,11 @@ const char *get_error_message(PGresult *result) {
     return PQresultErrorMessage(result);
 }
 
+const char *get_error_sqlstate(PGresult *result) {
+    if (result == NULL) return NULL;
+    return PQresultErrorField(result, PG_DIAG_SQLSTATE);
+}
+
 /* ─────── Memory hygiene (ABI MAJOR 1.5+; invariant in MAJOR 2) ─────── */
 
 void clear_result(PGresult *result) {

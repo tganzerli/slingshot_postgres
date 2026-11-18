@@ -61,7 +61,12 @@
 //       (libpq's local transaction state, no round-trip). Built for the
 //       deferred pool session reset. 2026-10-10. Existing symbols
 //       unchanged.
-#define NATIVE_DB_ABI_VERSION_MINOR 6
+//   7 → `pool_submit_query_cached` (Extended query through a per-connection
+//       LRU of named prepared statements, with one re-prepare on a stale
+//       statement), `pool_set_statement_cache_capacity` (0 = off) and
+//       `get_error_sqlstate` (the SQLSTATE of a result). 2026-11-16.
+//       Existing symbols unchanged.
+#define NATIVE_DB_ABI_VERSION_MINOR 7
 
 #ifdef __cplusplus
 extern "C" {
@@ -148,6 +153,12 @@ int get_result_status(PGresult* result);
 /// an empty string (never NULL) when the result carries no error.
 /// Caller MUST NOT free.
 const char* get_error_message(PGresult* result);
+
+/// ABI MINOR 7 — the five-character SQLSTATE of `result`
+/// (`PQresultErrorField(result, PG_DIAG_SQLSTATE)`), or NULL when the
+/// result carries none (success, client-side error) or `result` is NULL.
+/// The pointer lives as long as `result`.
+const char* get_error_sqlstate(PGresult* result);
 
 /* ─────── Memory hygiene — added in ABI MINOR 5 of MAJOR 1; invariant in MAJOR 2 ─────── */
 

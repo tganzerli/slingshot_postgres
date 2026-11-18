@@ -129,6 +129,17 @@ Experimental (pre-1.0). Native ABI `MAJOR 2 / MINOR 6`.
   (the reset skips `DEALLOCATE ALL` and `DISCARD PLANS`), on release or deferred. With `sessionResetQuery: null`
   nothing runs on release, except a `ROLLBACK` when the borrower left a transaction open, decided from the
   client-side transaction status.
+- **Prepared-statement cache.** `PoolConfig.statementCacheSize` (default 0, off) prepares every statement that
+  takes the Extended protocol (with `params`, or `binaryResult`) under a name on its first use on a connection,
+  and runs the prepared statement afterwards: the server skips parsing and planning. Least-recently-used
+  statements beyond the capacity are closed on the server. Needs `preservePreparedStatements` (or
+  `sessionResetQuery: null`). A statement made stale by `DEALLOCATE ALL` or a schema change is prepared again and
+  re-run once outside a transaction; inside one, the error surfaces (with its SQLSTATE) and the next use prepares
+  afresh.
+- **Timeouts.** A statement that hits its timeout is cancelled and drained, and reported as
+  `QueryTimeoutException`; the connection and its session stay usable. When the session cannot be ended cleanly
+  (the deadline hit before the statement was fully sent, or the server ignored the cancel for 5 s), the connection
+  is reconnected and the statement is reported as `ConnectionLostException`; a statement not fully sent never runs.
 - **Transactions:** `withTransaction`, `withTransactionOn`, `withPipelinedTransaction` (libpq pipeline mode
   for bulk writes), `withTransactionInstrumented` with `TxDiagnostics`, and `withPostgresConnection` for
   autocommit work on one borrowed connection.

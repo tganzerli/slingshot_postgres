@@ -25,6 +25,10 @@ const _internal = [
   'native_pool_worker_main',
   'native_pool_worker_reset',
   'native_pool_free_slot_payload',
+  // ABI MINOR 7: the statement cache is internal to the worker.
+  'stmt_cache_lookup',
+  'stmt_cache_insert',
+  'stmt_cache_clear',
 ];
 
 /// Names of the functions declared in the public headers (`native/include/*.h`,

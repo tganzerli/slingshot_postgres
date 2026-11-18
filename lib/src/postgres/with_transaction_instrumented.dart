@@ -38,7 +38,8 @@ Future<T> withTransactionInstrumented<T>(
 ) async {
   final total = Stopwatch()..start();
   final leased = await pool.acquire();
-  final exec = PostgresQueryExecutor(pool.binding, leased.raw);
+  final exec = PostgresQueryExecutor(pool.binding, leased.raw,
+      statementCache: pool.statementCacheEnabled);
 
   final acquireWaitUs = leased.acquireWaitUs ?? 0;
   final queueDepth = leased.queueDepthAtAcquire ?? 0;

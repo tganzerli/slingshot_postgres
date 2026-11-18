@@ -32,7 +32,8 @@ Future<T> withPostgresConnection<T>(
 ) async {
   final leased = await pool.acquire();
   try {
-    return await body(PostgresQueryExecutor(pool.binding, leased.raw));
+    return await body(PostgresQueryExecutor(pool.binding, leased.raw,
+        statementCache: pool.statementCacheEnabled));
   } finally {
     await leased.release();
   }

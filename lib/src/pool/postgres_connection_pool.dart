@@ -147,6 +147,35 @@ class PoolConfig {
   /// Otherwise [PostgresConnectionPool.start] throws.
   final bool preservePreparedStatements;
 
+  /// Per-connection capacity of the prepared-statement cache; 0 (the
+  /// default) turns it off.
+  ///
+  /// When on, every statement that takes the Extended protocol (one with
+  /// `params`, or `binaryResult`) is prepared under a name on the first
+  /// use of its SQL text on a connection, and the following uses on that
+  /// connection run the prepared statement: the server skips parse and
+  /// planning. The cache is keyed by the SQL text plus the parameter
+  /// types and keeps the most recently used [statementCacheSize]
+  /// statements per connection; the evicted ones are closed on the
+  /// server. Parameterless text statements (the Simple protocol) are not
+  /// affected.
+  ///
+  /// A cached statement can go stale: `DEALLOCATE ALL` run by hand
+  /// (SQLSTATE 26000), or a schema change that alters the columns a
+  /// cached query returns (0A000, `cached plan must not change result
+  /// type`). Outside a transaction the statement is prepared again and
+  /// the query re-run once, transparently. Inside a transaction the
+  /// server has already aborted it, so the [QueryFailedException] is
+  /// thrown, with the SQLSTATE at the end of its message, and the next
+  /// use prepares afresh. Restarting the application after a migration
+  /// avoids it.
+  ///
+  /// Requires [preservePreparedStatements] (or a disabled reset,
+  /// `sessionResetQuery: null`), since `DISCARD ALL` would drop every
+  /// cached statement on each release, and a native library with ABI
+  /// MINOR 7 or later. Otherwise [PostgresConnectionPool.start] throws.
+  final int statementCacheSize;
+
   const PoolConfig({
     required this.connInfo,
     this.minSize = 2,
@@ -156,7 +185,9 @@ class PoolConfig {
     this.sessionResetQuery = _defaultResetQuery,
     this.deferSessionReset = false,
     this.preservePreparedStatements = false,
+    this.statementCacheSize = 0,
   })  : assert(minSize >= 0),
+        assert(statementCacheSize >= 0),
         assert(maxSize >= minSize),
         assert(maxSize > 0);
 }
@@ -407,7 +438,23 @@ class PostgresConnectionPool {
             'with ABI MINOR 6 or later (pool_conn_transaction_status)');
       }
     }
-    _nativePool = NativePool.create(
+    final setCapacity = _binding.poolSetStatementCacheCapacity;
+    if (config.statementCacheSize > 0) {
+      if (!config.preservePreparedStatements &&
+          config.sessionResetQuery != null) {
+        throw ArgumentError.value(
+            config.statementCacheSize,
+            'statementCacheSize',
+            'the statement cache needs a reset that keeps prepared '
+                'statements: set preservePreparedStatements, or disable the '
+                'reset with sessionResetQuery: null');
+      }
+      if (setCapacity == null || _binding.poolSubmitQueryCached == null) {
+        throw StateError('statementCacheSize needs a native library with ABI '
+            'MINOR 7 or later (pool_submit_query_cached)');
+      }
+    }
+    final pool = NativePool.create(
       binding: _binding,
       conninfo: config.connInfo,
       minSize: config.minSize,
@@ -416,7 +463,15 @@ class PostgresConnectionPool {
       // `pool_acquire(0)` a true non-blocking probe (`native_pool.h`).
       acquireTimeout: Duration.zero,
     );
+    if (config.statementCacheSize > 0) {
+      setCapacity!(pool.ptr, config.statementCacheSize);
+    }
+    _nativePool = pool;
   }
+
+  /// Whether the executors serving borrowers use the statement cache
+  /// ([PoolConfig.statementCacheSize] > 0).
+  bool get statementCacheEnabled => config.statementCacheSize > 0;
 
   /// Acquires a connection. Gates Dart-side to keep `_inUse <=
   /// maxSize`, so the native `pool_acquire(0)` probe always succeeds

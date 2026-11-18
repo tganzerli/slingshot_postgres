@@ -93,8 +93,8 @@ Future<void> withPipelinedTransaction(
   if (queries.isEmpty) return;
   final leased = await pool.acquire();
   try {
-    final exec =
-        PostgresQueryExecutor(pool.binding, leased.raw, timeout: timeout);
+    final exec = PostgresQueryExecutor(pool.binding, leased.raw,
+        timeout: timeout, statementCache: pool.statementCacheEnabled);
     await exec.executePipeline([
       'BEGIN',
       ...queries,

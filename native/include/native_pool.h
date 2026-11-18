@@ -62,8 +62,13 @@ typedef struct native_conn native_conn_t;
 /// failure of one query, not of the link.
 
 #define WORKER_PORT_CONN_LOST ((int64_t)3)
-/// ABI MINOR 3 (2026-09-11) — additive. The link to the server is gone
-/// (`PQstatus(conn) == CONNECTION_BAD`). Distinguished from
+/// ABI MINOR 3 (2026-09-11) — additive. The session is gone: the link to
+/// the server died (`PQstatus(conn) == CONNECTION_BAD`), or (since
+/// 2026-11-16) the worker gave the session up with the link still up,
+/// because the statement could not be ended cleanly (the deadline hit
+/// before it was fully sent, the server did not end it within the cancel
+/// grace window, or a read failed). In both cases the statement's outcome
+/// is unknown and any open transaction is gone. Distinguished from
 /// `WORKER_PORT_ABORTED` because the two need different handling: a
 /// timeout leaves the session intact, a lost connection destroys it,
 /// and before MINOR 3 both arrived as `2`, so a dead link was
@@ -320,6 +325,80 @@ int pool_submit_query_params_prefixed(
 /// (`PGRES_PIPELINE_ABORTED`); an explicit transaction a prefix opened
 /// stays open (aborted) and belongs to the caller.
 int pool_submit_query_params_prefixed_n(
+    native_conn_t* conn,
+    const char* const* prefix_sqls,
+    int32_t n_prefix,
+    const char* sql,
+    int32_t n_params,
+    const int32_t* param_types,
+    const char* const* param_values,
+    const int* param_lengths,
+    const int* param_formats,
+    int result_format,
+    int64_t port_id,
+    int64_t timeout_ms
+);
+
+/// ABI MINOR 7 — sets the capacity of the per-connection cache of
+/// server-side prepared statements used by `pool_submit_query_cached`.
+///
+/// 0 (the initial value) disables the cache; negative values count as 0.
+/// Every worker reads the value at the start of its next cached job, so a
+/// change applies lazily, connection by connection; shrinking evicts the
+/// least-recently-used entries, whose statements are closed on the server
+/// on a later job of `pool_submit_query_cached` (at 0 too: that job runs
+/// unnamed and closes what is left). Thread-safe. No-op on NULL.
+void pool_set_statement_cache_capacity(native_pool_t* pool, int32_t capacity);
+
+/// ABI MINOR 7 — `pool_submit_query_params_prefixed_n` (with `n_prefix`
+/// allowed to be 0) whose query goes through the connection's cache of
+/// prepared statements.
+///
+/// The worker keys the cache by `sql` plus `param_types` (a statement
+/// fixes its parameter types when prepared):
+///   * hit  — `PQsendQueryPrepared` with the cached name;
+///   * miss — `PQsendPrepare` with a fresh name `_ss<n>` and then
+///            `PQsendQueryPrepared`;
+/// both in a libpq pipeline after the prefixes, under one Sync: no extra
+/// round-trip, and a timeout cancels and drains to the Sync as in
+/// `pool_submit_query_params_prefixed_n`. The entry is kept only once the
+/// server confirmed the Prepare.
+/// Statements evicted from a full cache (least recently used first) are
+/// closed on the server at the start of a later job: `PQsendClosePrepared`
+/// when the library was built against libpq >= 17; else `DEALLOCATE`, in
+/// the same pipeline on an idle connection, or in a round-trip of its own
+/// under a savepoint inside the caller's transaction. Nothing is closed
+/// while the transaction is aborted; that waits for a later job.
+///
+/// Delivery is the one of `pool_submit_query_params_prefixed_n`: the
+/// caller pulls, via `poll_result`, one result per prefix in order, then
+/// the query's. Prepare/Close results never reach the caller; when the
+/// Prepare itself fails (e.g. a syntax error), its error result takes the
+/// query's place.
+///
+/// Stale statements: when the query fails with SQLSTATE 26000 (the
+/// statement no longer exists, e.g. after `DEALLOCATE ALL`) or with the
+/// 0A000 of the plan cache (`cached plan must not change result type`,
+/// after a schema change; matched by its source function, not any 0A000),
+/// the entry is dropped. If the connection is then outside a
+/// transaction, the worker re-prepares and runs the query ONCE more and
+/// hands back that result instead. Inside a transaction the error
+/// already aborted it, so it is handed back as is and the caller rolls
+/// back; the next use of that SQL prepares afresh. A Prepare refused
+/// with 42P05 (the name was taken by the caller's own `PREPARE`) is
+/// retried once with the next name under the same rule.
+///
+/// The cache lives on the server session: it is dropped whenever the
+/// worker reconnects the slot. A session reset that deallocates
+/// statements (`DISCARD ALL`) makes every entry stale; pair the cache
+/// with a reset that preserves them.
+///
+/// With the capacity at 0 (and nothing left to close) this behaves exactly
+/// like `pool_submit_query_params` (n_prefix 0) or
+/// `pool_submit_query_params_prefixed_n`. Returns 1 on dispatch success,
+/// 0 if the slot is occupied, an argument is invalid or an allocation
+/// failed.
+int pool_submit_query_cached(
     native_conn_t* conn,
     const char* const* prefix_sqls,
     int32_t n_prefix,

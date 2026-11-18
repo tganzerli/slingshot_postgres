@@ -12,6 +12,7 @@
 #include <libpq-fe.h>
 
 #include "native_pool.h"
+#include "stmt_cache.h"
 
 /// FIFO node holding one `PGresult*` pre-drained by the worker for the
 /// multi-read path (ABI MINOR 2). The worker drains ALL results of a
@@ -43,6 +44,8 @@ struct native_conn {
     int is_pipeline;               // 0 = single query, 1 = pipeline
     int is_params;                 // ABI MINOR 1: 1 = use PQsendQueryParams
     int is_multi_read;             // ABI MINOR 2: 1 = multi-statement, chain results
+    int is_cached;                 // ABI MINOR 7: 1 = params query through `stmts`
+                                   // (n_prefix may be 0); implies is_params
     int32_t n_prefix;              // ABI MINOR 5/6: > 0 = sql[0..n_prefix-1] prefixes
                                    // + sql[n_prefix] params query
     char** sql;                    // heap-allocated copy; sql[0..count-1]
@@ -88,6 +91,11 @@ struct native_conn {
     // convalescing slot only when no healthy one is free, and the
     // worker re-attempts the reset before executing on it.
     _Atomic int health;                // CONN_HEALTH_*
+
+    // ── Prepared-statement cache (ABI MINOR 7) ──
+    // Touched only by the worker. Mirrors the statements prepared on the
+    // current server session; cleared by `native_pool_worker_reset`.
+    stmt_cache_t stmts;
 };
 
 /// Values of `native_conn.health`.
@@ -122,6 +130,11 @@ struct native_pool {
     pthread_cond_t  free_cond;     // signaled by release
 
     _Atomic int shutting_down;     // 1 = pool_destroy in progress
+
+    // ABI MINOR 7: per-connection statement cache capacity, set by
+    // `pool_set_statement_cache_capacity` and read by each worker at the
+    // start of a cached job. 0 = disabled.
+    _Atomic int32_t stmt_capacity;
 };
 
 /// Worker thread entry point. Defined in `native_pool_worker.c`.

@@ -161,15 +161,26 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   @visibleForTesting
   static bool debugForceStandaloneReset = false;
 
+  /// ABI MINOR 7: whether the Extended path runs its statements through
+  /// the connection's cache of prepared statements
+  /// (`pool_submit_query_cached`). Set from
+  /// `PoolConfig.statementCacheSize` by the executors that serve a
+  /// borrower; the pool's own reset executors leave it off. Ignored when
+  /// the linked library predates MINOR 7 (the pool refuses to start in
+  /// that case, so only a hand-built executor can hit it).
+  final bool _statementCache;
+
   PostgresQueryExecutor(this._binding, this._conn,
       {Duration? timeout,
       QueryPhaseSink? phaseSink,
       bool deferredBegin = false,
-      bool applyDeferredReset = true})
+      bool applyDeferredReset = true,
+      bool statementCache = false})
       : _timeout = timeout,
         _phaseSink = phaseSink,
         _pendingBegin = deferredBegin,
-        _resetUnchecked = applyDeferredReset;
+        _resetUnchecked = applyDeferredReset,
+        _statementCache = statementCache;
 
   /// Takes the connection's pending session reset, once per executor.
   bool _takeReset() {
@@ -434,17 +445,26 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// ABI MINOR 6: with [reset], the session reset prefix
   /// ([ResetStatements.prefix], then `BEGIN` if [begin]) goes as N
   /// prefixes via `pool_submit_query_params_prefixed_n`.
+  ///
+  /// ABI MINOR 7: with [_statementCache], every case above goes through
+  /// `pool_submit_query_cached` instead, the prefixes (reset, `BEGIN`)
+  /// riding the same pipeline as the cached statement. A failure then
+  /// carries its SQLSTATE in the message.
   Future<PostgresResultSet> _executeExtended(
       String sql, List<Param> params, bool binaryResult,
       {bool reset = false, bool begin = false}) async {
     final sink = _phaseSink;
     final sw = sink == null ? null : (Stopwatch()..start());
+    final cached = _statementCache ? _binding.poolSubmitQueryCached : null;
     final port = ReceivePort();
     final sqlPtr = sql.toNativeUtf8();
-    final prefixPtr = begin && !reset ? 'BEGIN'.toNativeUtf8() : null;
-    final prefixes =
-        reset ? [..._resetPrefix, if (begin) 'BEGIN'] : const <String>[];
-    final prefixVec = reset ? malloc<ffi.Pointer<Utf8>>(prefixes.length) : null;
+    final prefixPtr =
+        cached == null && begin && !reset ? 'BEGIN'.toNativeUtf8() : null;
+    final prefixes = reset || (cached != null && begin)
+        ? [if (reset) ..._resetPrefix, if (begin) 'BEGIN']
+        : const <String>[];
+    final prefixVec =
+        prefixes.isNotEmpty ? malloc<ffi.Pointer<Utf8>>(prefixes.length) : null;
     final prefixAllocated = <ffi.Pointer<Utf8>>[];
     // `marshalled` is assigned inside the try so a throw from
     // `marshalParams` (e.g. range-check on Param.int2) still hits
@@ -463,10 +483,10 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
           prefixVec[i] = p;
         }
       }
-      final status = prefixVec != null
-          ? _binding.poolSubmitQueryParamsPrefixedN!(
+      final status = cached != null
+          ? cached(
               _conn,
-              prefixVec,
+              prefixVec ?? ffi.nullptr,
               prefixes.length,
               sqlPtr,
               marshalled.count,
@@ -478,9 +498,11 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
               port.sendPort.nativePort,
               timeoutMs,
             )
-          : prefixPtr == null
-              ? _binding.poolSubmitQueryParams(
+          : prefixVec != null
+              ? _binding.poolSubmitQueryParamsPrefixedN!(
                   _conn,
+                  prefixVec,
+                  prefixes.length,
                   sqlPtr,
                   marshalled.count,
                   marshalled.types,
@@ -491,19 +513,32 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
                   port.sendPort.nativePort,
                   timeoutMs,
                 )
-              : _binding.poolSubmitQueryParamsPrefixed!(
-                  _conn,
-                  prefixPtr,
-                  sqlPtr,
-                  marshalled.count,
-                  marshalled.types,
-                  marshalled.values,
-                  marshalled.lengths,
-                  marshalled.formats,
-                  binaryResult ? 1 : 0,
-                  port.sendPort.nativePort,
-                  timeoutMs,
-                );
+              : prefixPtr == null
+                  ? _binding.poolSubmitQueryParams(
+                      _conn,
+                      sqlPtr,
+                      marshalled.count,
+                      marshalled.types,
+                      marshalled.values,
+                      marshalled.lengths,
+                      marshalled.formats,
+                      binaryResult ? 1 : 0,
+                      port.sendPort.nativePort,
+                      timeoutMs,
+                    )
+                  : _binding.poolSubmitQueryParamsPrefixed!(
+                      _conn,
+                      prefixPtr,
+                      sqlPtr,
+                      marshalled.count,
+                      marshalled.types,
+                      marshalled.values,
+                      marshalled.lengths,
+                      marshalled.formats,
+                      binaryResult ? 1 : 0,
+                      port.sendPort.nativePort,
+                      timeoutMs,
+                    );
       if (status != 1) {
         throw QueryFailedException(sql, 'libpq refused to send query (params)');
       }
@@ -538,7 +573,8 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
       _pendingBegin = begin;
       return execute(sql, params: params, binaryResult: binaryResult);
     }
-    final rs = _drainResults(sql, binary: binaryResult);
+    final rs =
+        _drainResults(sql, binary: binaryResult, withSqlstate: cached != null);
     if (sink != null) {
       emitQueryPhases(
           sink,
@@ -573,14 +609,24 @@ class PostgresQueryExecutor implements PostgresQueryExecutorContract {
   /// The trailing results are inspected too (2026-10-12): an error past
   /// the first statement of a multi-statement string used to be cleared
   /// unseen — see [_drainTrailing].
-  PostgresResultSet _drainResults(String sql, {required bool binary}) {
+  ///
+  /// With [withSqlstate] (the cached path, ABI MINOR 7) the head error's
+  /// message ends with ` [SQLSTATE xxxxx]` when the server sent one.
+  PostgresResultSet _drainResults(String sql,
+      {required bool binary, bool withSqlstate = false}) {
     final result = _binding.pollResult(_conn);
     if (result == ffi.nullptr) {
       return PostgresResultSet.empty();
     }
     final status = _binding.getResultStatus(result);
     if (PgExecStatus.isError(status)) {
-      final msg = _binding.getErrorMessage(result).toDartString();
+      var msg = _binding.getErrorMessage(result).toDartString();
+      if (withSqlstate) {
+        final state = _binding.getErrorSqlstate?.call(result);
+        if (state != null && state != ffi.nullptr) {
+          msg = '${msg.trimRight()} [SQLSTATE ${state.toDartString()}]';
+        }
+      }
       _binding.clearResult(result);
       _drainRemaining();
       throw QueryFailedException(sql, msg.isEmpty ? 'query failed' : msg);

@@ -9,6 +9,7 @@ close_db
 connect_db
 get_col_count
 get_error_message
+get_error_sqlstate
 get_field_name
 get_field_type
 get_raw_length
@@ -24,9 +25,11 @@ pool_create
 pool_create_with_error
 pool_destroy
 pool_release
+pool_set_statement_cache_capacity
 pool_submit_multi_read
 pool_submit_pipeline
 pool_submit_query
+pool_submit_query_cached
 pool_submit_query_params
 pool_submit_query_params_prefixed
 pool_submit_query_params_prefixed_n
